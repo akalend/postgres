@@ -62,8 +62,12 @@
 #include "storage/lmgr.h"
 #include "utils/date.h"
 #include "utils/datetime.h"
+#include "utils/model.h"
 #include "utils/numeric.h"
 #include "utils/xml.h"
+
+
+
 
 
 /*
@@ -178,6 +182,7 @@ static Node *makeBoolAConst(bool state, int location);
 static Node *makeBitStringConst(char *str, int location);
 static Node *makeNullAConst(int location);
 static Node *makeAConst(Node *v, int location);
+static Node *makeModelElement(char* key, char *value, int16 ival);
 static RoleSpec *makeRoleSpec(RoleSpecType type, int location);
 static void check_qualified_name(List *names, core_yyscan_t yyscanner);
 static List *check_func_name(List *names, core_yyscan_t yyscanner);
@@ -293,6 +298,7 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 		AnalyzeStmt CallStmt ClosePortalStmt ClusterStmt CommentStmt
 		ConstraintsSetStmt CopyStmt CreateAsStmt CreateCastStmt
 		CreateDomainStmt CreateExtensionStmt CreateGroupStmt CreateOpClassStmt
+		CreateModelStmt
 		CreateOpFamilyStmt AlterOpFamilyStmt CreatePLangStmt
 		CreateSchemaStmt CreateSeqStmt CreateStmt CreateStatsStmt CreateTableSpaceStmt
 		CreateFdwStmt CreateForeignServerStmt CreateForeignTableStmt
@@ -659,6 +665,11 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 				json_object_constructor_null_clause_opt
 				json_array_constructor_null_clause_opt
 
+/*
+ * MODEL options
+ */
+%type <node>	OptModelElement
+%type <list>	OptModelElements OptModelElementList
 
 /*
  * Non-keyword token types.  These are hard-wired into the "flex" lexer.
@@ -693,7 +704,7 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 	BOOLEAN_P BOTH BREADTH BY
 
 	CACHE CALL CALLED CASCADE CASCADED CASE CAST CATALOG_P CHAIN CHAR_P
-	CHARACTER CHARACTERISTICS CHECK CHECKPOINT CLASS CLOSE
+	CHARACTER CHARACTERISTICS CHECK CHECKPOINT CLASS CLASSIFICATION CLOSE
 	CLUSTER COALESCE COLLATE COLLATION COLUMN COLUMNS COMMENT COMMENTS COMMIT
 	COMMITTED COMPRESSION CONCURRENTLY CONFIGURATION CONFLICT
 	CONNECTION CONSTRAINT CONSTRAINTS CONTENT_P CONTINUE_P CONVERSION_P COPY
@@ -731,7 +742,7 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 	LOCALTIME LOCALTIMESTAMP LOCATION LOCK_P LOCKED LOGGED
 
 	MAPPING MATCH MATCHED MATERIALIZED MAXVALUE MERGE METHOD
-	MINUTE_P MINVALUE MODE MONTH_P MOVE
+	MINUTE_P MINVALUE MODE MONTH_P MOVE MODEL
 
 	NAME_P NAMES NATIONAL NATURAL NCHAR NEW NEXT NFC NFD NFKC NFKD NO NONE
 	NORMALIZE NORMALIZED
@@ -750,7 +761,7 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 	QUOTE
 
 	RANGE READ REAL REASSIGN RECHECK RECURSIVE REF_P REFERENCES REFERENCING
-	REFRESH REINDEX RELATIVE_P RELEASE RENAME REPEATABLE REPLACE REPLICA
+	REFRESH REINDEX REGRESSION RELATIVE_P RELEASE RENAME REPEATABLE REPLACE REPLICA
 	RESET RESTART RESTRICT RETURN RETURNING RETURNS REVOKE RIGHT ROLE ROLLBACK ROLLUP
 	ROUTINE ROUTINES ROW ROWS RULE
 
@@ -1017,6 +1028,7 @@ stmt:
 			| CreateFunctionStmt
 			| CreateGroupStmt
 			| CreateMatViewStmt
+			| CreateModelStmt
 			| CreateOpClassStmt
 			| CreateOpFamilyStmt
 			| CreatePublicationStmt
@@ -6329,6 +6341,62 @@ enum_val_list:	Sconst
 				{ $$ = list_make1(makeString($1)); }
 			| enum_val_list ',' Sconst
 				{ $$ = lappend($1, makeString($3)); }
+		;
+
+/*****************************************************************************
+ *
+ *		QUERY :
+ *				CREATE [CLASSIFICATION | REGRESSION] MODEL name ( options ) FROM table
+ *
+ *****************************************************************************/
+CreateModelStmt:
+			CREATE MODEL name   '(' OptModelElementList ')' FROM name
+				{
+					CreateModelStmt *n = makeNode(CreateModelStmt);
+					n->objectType = OBJECT_MODEL;
+					n->modelname = $3;
+					n->tablename = $8;
+					n->options = $5;
+					n->modelclass = CREATE_MODEL_CLASSIFICATION;
+					$$ = (Node *) n;
+				}
+			| CREATE CLASSIFICATION MODEL name '(' OptModelElementList ')' FROM name
+				{
+					CreateModelStmt *n = makeNode(CreateModelStmt);
+					n->objectType = OBJECT_MODEL;
+					n->modelname = $4;
+					n->tablename = $9;
+					n->options = $6;
+					n->modelclass = CREATE_MODEL_CLASSIFICATION;
+					$$ = (Node *) n;
+				}
+			| CREATE REGRESSION MODEL name '(' OptModelElementList ')' FROM name
+				{
+					CreateModelStmt *n = makeNode(CreateModelStmt);
+					n->objectType = OBJECT_MODEL;
+					n->modelname = $4;
+					n->tablename = $9;
+					n->options = $6;
+					n->modelclass = CREATE_MODEL_REGRESSION;
+					$$ = (Node *) n;
+				}
+		;
+
+		OptModelElementList:
+			OptModelElements						{ $$ = $1; }
+			| /* EMPTY */							{ $$ = NIL; }
+		;
+
+		OptModelElements:
+			OptModelElement								{ $$ = list_make1($1); }
+			| OptModelElements ',' OptModelElement		{ $$ = lappend($1, $3); }
+		;
+
+		OptModelElement:
+			name name 					{$$ = makeModelElement($1, $2, -1);}
+			| name Iconst 				{$$ = makeModelElement($1, NULL, $2);}
+			| name name name 			{$$ = makeModelElement($1, $3, -1);}
+			| name name Iconst 			{$$ = makeModelElement($1, NULL, $3);}
 		;
 
 /*****************************************************************************
@@ -16969,6 +17037,7 @@ unreserved_keyword:
 			| CHARACTERISTICS
 			| CHECKPOINT
 			| CLASS
+			| CLASSIFICATION
 			| CLOSE
 			| CLUSTER
 			| COLUMNS
@@ -17092,6 +17161,7 @@ unreserved_keyword:
 			| MINUTE_P
 			| MINVALUE
 			| MODE
+			| MODEL
 			| MONTH_P
 			| MOVE
 			| NAME_P
@@ -17151,6 +17221,7 @@ unreserved_keyword:
 			| REF_P
 			| REFERENCING
 			| REFRESH
+			| REGRESSION
 			| REINDEX
 			| RELATIVE_P
 			| RELEASE
@@ -17504,6 +17575,7 @@ bare_label_keyword:
 			| CHECK
 			| CHECKPOINT
 			| CLASS
+			| CLASSIFICATION
 			| CLOSE
 			| CLUSTER
 			| COALESCE
@@ -17676,6 +17748,7 @@ bare_label_keyword:
 			| METHOD
 			| MINVALUE
 			| MODE
+			| MODEL
 			| MOVE
 			| NAME_P
 			| NAMES
@@ -17752,6 +17825,7 @@ bare_label_keyword:
 			| REFERENCES
 			| REFERENCING
 			| REFRESH
+			| REGRESSION
 			| REINDEX
 			| RELATIVE_P
 			| RELEASE

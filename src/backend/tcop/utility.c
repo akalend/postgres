@@ -69,6 +69,7 @@
 #include "tcop/utility.h"
 #include "utils/acl.h"
 #include "utils/guc.h"
+#include "utils/model.h"
 #include "utils/lsyscache.h"
 #include "utils/rel.h"
 #include "utils/syscache.h"
@@ -321,6 +322,7 @@ ClassifyUtilityCommandAsReadOnly(Node *parsetree)
 
 		case T_ExplainStmt:
 		case T_VariableShowStmt:
+		case T_CreateModelStmt:
 			{
 				/*
 				 * These commands don't modify any data and are safe to run in
@@ -1070,6 +1072,12 @@ standard_ProcessUtility(PlannedStmt *pstmt,
 									   dest, qc);
 				else
 					ExecSecLabelStmt(stmt);
+				break;
+			}
+		case T_CreateModelStmt:
+			{
+				CreateModelStmt *stmt = (CreateModelStmt*) parsetree;
+				ModelExecute(stmt, dest);
 				break;
 			}
 
@@ -2068,6 +2076,9 @@ UtilityReturnsTuples(Node *parsetree)
 		case T_VariableShowStmt:
 			return true;
 
+		case T_CreateModelStmt:
+			return true;
+
 		default:
 			return false;
 	}
@@ -2122,6 +2133,12 @@ UtilityTupleDescriptor(Node *parsetree)
 
 				return GetPGVariableResultDesc(n->name);
 			}
+
+		case T_CreateModelStmt:
+			{
+				return GetCreateModelResultDesc();
+			}
+
 
 		default:
 			return NULL;
@@ -3227,6 +3244,10 @@ CreateCommandTag(Node *parsetree)
 			}
 			break;
 
+		case T_CreateModelStmt:
+			tag = CMDTAG_CREATE_MODEL;
+			break;
+
 		default:
 			elog(WARNING, "unrecognized node type: %d",
 				 (int) nodeTag(parsetree));
@@ -3761,6 +3782,11 @@ GetCommandLogLevel(Node *parsetree)
 			}
 			break;
 
+		case T_CreateModelStmt:
+			{
+				lev = LOGSTMT_ALL;
+				break;
+			}
 		default:
 			elog(WARNING, "unrecognized node type: %d",
 				 (int) nodeTag(parsetree));

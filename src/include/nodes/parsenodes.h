@@ -28,6 +28,7 @@
 #include "nodes/primnodes.h"
 #include "nodes/value.h"
 #include "partitioning/partdefs.h"
+#include "partitioning/partdefs.h"
 
 
 typedef enum OverridingKind
@@ -2102,6 +2103,7 @@ typedef enum ObjectType
 	OBJECT_LANGUAGE,
 	OBJECT_LARGEOBJECT,
 	OBJECT_MATVIEW,
+	OBJECT_MODEL,	
 	OBJECT_OPCLASS,
 	OBJECT_OPERATOR,
 	OBJECT_OPFAMILY,
@@ -4046,5 +4048,28 @@ typedef struct DropSubscriptionStmt
 	bool		missing_ok;		/* Skip error if missing? */
 	DropBehavior behavior;		/* RESTRICT or CASCADE behavior */
 } DropSubscriptionStmt;
+
+/* ----------------------
+ *		Create MODEL Statement
+ * ----------------------
+ */
+
+typedef enum CreateModelType
+{
+	CREATE_MODEL_CLASSIFICATION,
+	CREATE_MODEL_REGRESSION,
+	CREATE_MODEL_RANKING,
+} CreateModelType;
+
+typedef struct CreateModelStmt
+{
+	NodeTag			type;
+	ObjectType		objectType;		/* OBJECT_FUNCTION, OBJECT_TRIGGER, etc */
+	char	   		*modelname;		/* Model name */
+	char	   		*tablename;		/* data table for learning dataset  */
+	CreateModelType modelclass;		/* class of model  */
+	List	   		*options;		/* List of Options nodes */
+} CreateModelStmt;
+
 
 #endif							/* PARSENODES_H */

@@ -2038,4 +2038,12 @@ typedef struct OnConflictExpr
 	List	   *exclRelTlist;	/* tlist of the EXCLUDED pseudo relation */
 } OnConflictExpr;
 
+typedef struct ModelOptElement
+{
+	NodeTag		type;
+	char 		*key;
+	char 		*value;
+	int16		ival;
+} ModelOptElement;
+
 #endif							/* PRIMNODES_H */

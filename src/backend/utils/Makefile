@@ -24,6 +24,7 @@ SUBDIRS     = \
 	init \
 	mb \
 	misc \
+	model \
 	mmgr \
 	resowner \
 	sort \

@@ -1864,7 +1864,26 @@ exec_replication_command(const char *cmd_string)
 			}
 			break;
 
+		case T_CreateModelStmt:
+			{
+				DestReceiver *dest = CreateDestReceiver(DestRemoteSimple);
+				elog(NOTICE, "%s:%d",__FUNCTION__,__LINE__);
+				VariableShowStmt *n = (VariableShowStmt *) cmd_node;
+
+				cmdtag = "SHOW";
+				set_ps_display(cmdtag);
+
+				/* syscache access needs a transaction environment */
+				StartTransactionCommand();
+				GetPGVariable(n->name, dest);
+				CommitTransactionCommand();
+				EndReplicationCommand(cmdtag);
+			}
+			break;
+
 		default:
+
+
 			elog(ERROR, "unrecognized replication command node tag: %u",
 				 cmd_node->type);
 	}
