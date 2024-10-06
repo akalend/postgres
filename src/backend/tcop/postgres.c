@@ -1001,7 +1001,7 @@ pg_plan_queries(List *querytrees, const char *query_string, int cursorOptions,
 								 boundParams);
 		}
 
-		pprint(stmt);
+		// pprint(stmt);
 
 		stmt_list = lappend(stmt_list, stmt);
 	}
@@ -1071,7 +1071,7 @@ exec_simple_query(const char *query_string)
 	 */
 	parsetree_list = pg_parse_query(query_string);
 
-	pprint(parsetree_list);
+	// pprint(parsetree_list);
 
 	/* Log immediately if dictated by log_statement */
 	if (check_log_statement(parsetree_list))

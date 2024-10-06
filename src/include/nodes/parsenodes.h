@@ -4071,5 +4071,24 @@ typedef struct CreateModelStmt
 	List	   		*options;		/* List of Options nodes */
 } CreateModelStmt;
 
+typedef enum ModelParameter {
+    MODEL_PARAMETER_NONE = 0,
+    MODEL_PARAMETER_TARGET  = 1,
+    MODEL_PARAMETER_IGNORE, 
+} ModelParameter;
+
+typedef struct ModelOptElement
+{
+	NodeTag		type;
+	int			 parm;
+	char 		*value;
+	List 		*elements;
+} ModelOptElement;
+
+typedef struct StrModelElement
+{
+	NodeTag		type;
+	char 		*value;
+} StrModelElement;
 
 #endif							/* PARSENODES_H */

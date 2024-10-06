@@ -1,0 +1,233 @@
+#include "postgres.h"
+#include "c.h"
+#include "fmgr.h"
+
+#include "catalog/pg_proc.h"
+#include "access/genam.h"
+#include "access/table.h"
+#include "access/tableam.h"
+#include "access/stratnum.h"
+#include "executor/tuptable.h"
+#include "utils/fmgroids.h"
+#include "utils/snapmgr.h"
+
+
+#include "access/attnum.h"
+#include "access/tupdesc.h"
+#include "catalog/pg_type.h"
+#include "executor/executor.h"
+#include "executor/tuptable.h"
+#include "nodes/parsenodes.h"
+#include "tcop/dest.h"
+#include "utils/builtins.h"
+#include "utils/model.h"
+
+
+#define QUOTEMARK '"'
+
+
+// сделать shmem
+static Oid mlJsonWrapperOid = InvalidOid;
+
+static char*  quotation(char* in);
+
+
+inline char* 
+strip(char *p)
+{
+    char *p2 = p;
+
+    while(*p2 == ' ' || *p2 == ',' )
+        p2++;
+    return p2;
+}
+
+static char* 
+quotation(char* in)
+{
+    char * out, *p , *p2;
+    p = in;
+
+    elog(WARNING, "text='%s'", p);
+    p2 = out = palloc0(256);
+    
+   while (p = strip(p))
+    {    
+        if (*p == 0)
+            break;
+        *(p2++) = QUOTEMARK;
+        while ( isalpha(*p) || isdigit(*p) )
+        {
+            *p2++ = *p++ ;
+        }
+        *(p2++) = QUOTEMARK;
+        *(p2++) = ',';
+    }
+    *(p2--) = '\0'; 
+    *(p2--) = '\0'; 
+    return out;
+}
+
+
+
+/*
+ * Get a tuple descriptor for CREATE MODEL result
+ */
+TupleDesc
+GetCreateModelResultDesc(void)
+{
+	TupleDesc   tupdesc;
+
+	/* need a tuple descriptor representing three TEXT columns */
+	tupdesc = CreateTemplateTupleDesc(1);
+	TupleDescInitEntry(tupdesc, (AttrNumber) 1, "accuracy",
+					   TEXTOID, -1, 0);
+	return tupdesc;
+}
+
+/*
+ * Model accuratly 
+ */
+void
+ModelExecute(CreateModelStmt *stmt, DestReceiver *dest)
+{
+	TupOutputState *tstate;
+	TupleDesc   tupdesc;
+	int len = 1;
+	char *p, *p2, *parms;
+	// Datum options;
+	ListCell  *lc;
+	StringInfoData  buf;
+	Datum res;
+	float4 out;
+	char *res_out;
+
+	initStringInfo(&buf);
+	// appendStringInfoChar(&buf, '{');
+
+
+	// foreach(lc, stmt->options)
+	// {        
+	// 	ModelOptElement *opt;
+	// 	opt = (ModelOptElement *) lfirst(lc);
+		
+
+		// if (opt->parm == MODEL_PARAMETER_TARGET)
+		// {
+		// 	// char *str = quotation(opt->value);
+		// 	ListCell *lc2 =  lfirst(opt->elemetls);
+
+		// 	appendStringInfo(&buf, "\"TARGET\":\"%s\"", (char*)lc2->ptr_value);
+		// 	// pfree(str);
+		// }
+		// else
+		// {
+		// 	appendStringInfo(&buf, "\"IGNORED\":[\"%s\"]",opt->value);
+		// }
+
+		// appendStringInfo(&buf, ", ");
+	// }
+	// p2 = buf.data + len;
+	// len = buf.len - len;
+
+	// parms = palloc(len);
+	// p = parms;
+	// while (len --)
+	// 	*p++ = *p2++;
+	// *--p = '\0';
+
+	appendStringInfo(&buf, "{\"ignored\":[\"name\"], \"target\":\"res\"}");
+
+	// buf.data[buf.len-2] = '}';
+
+	if (mlJsonWrapperOid == InvalidOid)
+	{
+		mlJsonWrapperOid = GetProcOidByName("ml_learn");
+	}
+	elog(WARNING, "call func by oid %d", mlJsonWrapperOid);
+	elog(WARNING, "options %s", buf.data);
+	res = OidFunctionCall4(  mlJsonWrapperOid, 
+					CStringGetTextDatum(stmt->modelname),
+					DatumGetInt32(stmt->modelclass),
+					CStringGetTextDatum(buf.data),
+					CStringGetTextDatum(stmt->tablename));
+
+
+	/* need a tuple descriptor representing a single TEXT column */
+	tupdesc = CreateTemplateTupleDesc(1);
+	TupleDescInitBuiltinEntry(tupdesc, (AttrNumber) 1, "accuracy",
+							  TEXTOID, -1, 0);
+
+	/* prepare for projection of tuples */
+	tstate = begin_tup_output_tupdesc(dest, tupdesc, &TTSOpsVirtual);
+
+	out = DatumGetFloat8(res);
+	res_out = psprintf("%g", out);
+
+	/* Send it */
+	do_text_output_oneline(tstate, res_out);
+
+	end_tup_output(tstate);
+}
+
+Oid
+GetProcOidByName(const char* proname)
+{
+	Oid found_oid = -1;
+	Relation rel, idxrel;
+	NameData fname;
+	IndexScanDesc scan;
+	TupleTableSlot* slot;
+
+	HeapTuple tup;
+	ScanKeyData skey[1];
+	Name name = &fname;
+
+	namestrcpy(name, proname);
+
+	rel = table_open(ProcedureRelationId, RowExclusiveLock);
+	idxrel = index_open(ProcedureOidIndexId, AccessShareLock);
+
+
+	scan = index_beginscan(rel, idxrel, GetTransactionSnapshot(), 1 /* nkeys */, 0 /* norderbys */);
+
+	ScanKeyInit(&skey[0],
+				Anum_pg_proc_proname , 
+				BTGreaterEqualStrategyNumber, F_NAMEEQ,
+				NameGetDatum(name));
+
+
+
+	index_rescan(scan, skey, 1, NULL /* orderbys */, 0 /* norderbys */);
+
+	slot = table_slot_create(rel, NULL);
+	while (index_getnext_slot(scan, ForwardScanDirection, slot))
+	{
+		Form_pg_proc record;
+		bool should_free;
+
+		tup = ExecFetchSlotHeapTuple(slot, false, &should_free);
+		record = (Form_pg_proc) GETSTRUCT(tup);
+
+		if(strcmp(record->proname.data, name->data) == 0)
+		{
+			found_oid = record->oid;
+			if(should_free) heap_freetuple(tup);
+			break;
+		}
+
+		if(should_free) heap_freetuple(tup);
+	}
+
+	index_endscan(scan);
+	ExecDropSingleTupleTableSlot(slot);
+
+	index_close(idxrel, AccessShareLock);
+	table_close(rel, RowExclusiveLock);
+
+	if (found_oid == InvalidOid)
+		elog(ERROR, "procedure %s not found", proname);
+
+	// elog(WARNING, "oid=%d", found_oid);
+	return found_oid;
+}

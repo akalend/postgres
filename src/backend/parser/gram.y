@@ -182,7 +182,6 @@ static Node *makeBoolAConst(bool state, int location);
 static Node *makeBitStringConst(char *str, int location);
 static Node *makeNullAConst(int location);
 static Node *makeAConst(Node *v, int location);
-static Node *makeModelElement(char* key, char *value, int16 ival);
 static RoleSpec *makeRoleSpec(RoleSpecType type, int location);
 static void check_qualified_name(List *names, core_yyscan_t yyscanner);
 static List *check_func_name(List *names, core_yyscan_t yyscanner);
@@ -668,8 +667,10 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 /*
  * MODEL options
  */
-%type <node>	OptModelElement
+%type <node>	OptModelElement 
 %type <list>	OptModelElements OptModelElementList
+%type <node>	StrModelElement
+%type <list>	StrModelElements StrModelElementList
 
 /*
  * Non-keyword token types.  These are hard-wired into the "flex" lexer.
@@ -728,7 +729,7 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 
 	HANDLER HAVING HEADER_P HOLD HOUR_P
 
-	IDENTITY_P IF_P ILIKE IMMEDIATE IMMUTABLE IMPLICIT_P IMPORT_P IN_P INCLUDE
+	IDENTITY_P IF_P IGNORED ILIKE IMMEDIATE IMMUTABLE IMPLICIT_P IMPORT_P IN_P INCLUDE
 	INCLUDING INCREMENT INDENT INDEX INDEXES INHERIT INHERITS INITIALLY INLINE_P
 	INNER_P INOUT INPUT_P INSENSITIVE INSERT INSTEAD INT_P INTEGER
 	INTERSECT INTERVAL INTO INVOKER IS ISNULL ISOLATION
@@ -772,7 +773,7 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 	START STATEMENT STATISTICS STDIN STDOUT STORAGE STORED STRICT_P STRIP_P
 	SUBSCRIPTION SUBSTRING SUPPORT SYMMETRIC SYSID SYSTEM_P SYSTEM_USER
 
-	TABLE TABLES TABLESAMPLE TABLESPACE TEMP TEMPLATE TEMPORARY TEXT_P THEN
+	TABLE TABLES TABLESAMPLE TABLESPACE TARGET TEMP TEMPLATE TEMPORARY TEXT_P THEN
 	TIES TIME TIMESTAMP TO TRAILING TRANSACTION TRANSFORM
 	TREAT TRIGGER TRIM TRUE_P
 	TRUNCATE TRUSTED TYPE_P TYPES_P
@@ -6382,22 +6383,60 @@ CreateModelStmt:
 				}
 		;
 
-		OptModelElementList:
-			OptModelElements						{ $$ = $1; }
-			| /* EMPTY */							{ $$ = NIL; }
-		;
+	StrModelElementList:
+		StrModelElements							{ $$ = $1; }
+		| /* EMPTY */								{ $$ = NIL; }
+	;
 
-		OptModelElements:
-			OptModelElement								{ $$ = list_make1($1); }
-			| OptModelElements ',' OptModelElement		{ $$ = lappend($1, $3); }
-		;
+	StrModelElements:
+		StrModelElement								{ $$ = list_make1($1); }
+		| StrModelElements ',' StrModelElement		{ $$ = lappend($1, $3); }
+	;
 
-		OptModelElement:
-			name name 					{$$ = makeModelElement($1, $2, -1);}
-			| name Iconst 				{$$ = makeModelElement($1, NULL, $2);}
-			| name name name 			{$$ = makeModelElement($1, $3, -1);}
-			| name name Iconst 			{$$ = makeModelElement($1, NULL, $3);}
-		;
+	StrModelElement: name 							
+		{ 
+			StrModelElement *n = makeNode(StrModelElement);
+			n->value = pstrdup($1);
+			$$ = (Node *) n;
+		}
+	;
+
+	OptModelElementList:
+		OptModelElements							{ $$ = $1; }
+		| /* EMPTY */								{ $$ = NIL; }
+	;
+
+	OptModelElements:
+		OptModelElement								{ $$ = list_make1($1); }
+		| OptModelElements ',' OptModelElement		{ $$ = lappend($1, $3); }
+	;
+
+
+	OptModelElement:
+		TARGET	name
+			{
+				ModelOptElement *n = makeNode(ModelOptElement);
+				n->parm = MODEL_PARAMETER_TARGET;
+				n->value = pstrdup($2);
+				$$ = (Node *) n;
+			}
+		// | IGNORED '[' StrModelElementList ']'
+		// 	{
+		// 		ModelOptElement *n = makeNode(ModelOptElement);
+		// 		n->parm = MODEL_PARAMETER_IGNORE;
+		// 		n->value = NULL;
+		// 		n->elements = $3;
+		// 		$$ = (Node *) n;
+		// 	}
+		| IGNORED name
+			{
+				ModelOptElement *n = makeNode(ModelOptElement);
+				n->parm = MODEL_PARAMETER_IGNORE;
+				n->value = pstrdup($2);
+				n->elements = NULL;
+				$$ = (Node *) n;
+			}
+	;
 
 /*****************************************************************************
  *
@@ -17116,6 +17155,7 @@ unreserved_keyword:
 			| HOUR_P
 			| IDENTITY_P
 			| IF_P
+			| IGNORED
 			| IMMEDIATE
 			| IMMUTABLE
 			| IMPLICIT_P
@@ -17280,6 +17320,7 @@ unreserved_keyword:
 			| SYSTEM_P
 			| TABLES
 			| TABLESPACE
+			| TARGET
 			| TEMP
 			| TEMPLATE
 			| TEMPORARY
@@ -17683,6 +17724,7 @@ bare_label_keyword:
 			| HOLD
 			| IDENTITY_P
 			| IF_P
+			| IGNORED
 			| ILIKE
 			| IMMEDIATE
 			| IMMUTABLE
@@ -17896,6 +17938,7 @@ bare_label_keyword:
 			| TABLES
 			| TABLESAMPLE
 			| TABLESPACE
+			| TARGET
 			| TEMP
 			| TEMPLATE
 			| TEMPORARY

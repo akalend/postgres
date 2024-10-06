@@ -1867,15 +1867,16 @@ exec_replication_command(const char *cmd_string)
 		case T_CreateModelStmt:
 			{
 				DestReceiver *dest = CreateDestReceiver(DestRemoteSimple);
-				elog(NOTICE, "%s:%d",__FUNCTION__,__LINE__);
 				VariableShowStmt *n = (VariableShowStmt *) cmd_node;
+				elog(NOTICE, "%s:%d",__FUNCTION__,__LINE__);
 
-				cmdtag = "SHOW";
+				cmdtag = "CREATE_MODEL";
 				set_ps_display(cmdtag);
 
 				/* syscache access needs a transaction environment */
 				StartTransactionCommand();
-				GetPGVariable(n->name, dest);
+				elog(LOG, "walsender.c:1878, CREATE_MODEL tag");
+				// GetPGVariable(n->name, dest);
 				CommitTransactionCommand();
 				EndReplicationCommand(cmdtag);
 			}
