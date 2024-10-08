@@ -115,7 +115,6 @@ TupleDesc GetPredictModelResultDesc(PredictModelStmt *node){
 	if (!HeapTupleIsValid(tup))
 	    elog(ERROR, "cache lookup failed for relation %d", reloid);
 	form = (Form_pg_class) GETSTRUCT(tup);
-	elog(WARNING, "att count %d ", form->relnatts);
 
 	ReleaseSysCache(tup);
 
@@ -129,7 +128,7 @@ TupleDesc GetPredictModelResultDesc(PredictModelStmt *node){
 	ScanKeyInit(&skey[0],
 				Anum_pg_attribute_attrelid, 
 				BTEqualStrategyNumber, F_INT2EQ,
-				Int16GetDatum(16419));
+				Int16GetDatum(reloid));
 
 	index_rescan(scan, skey, 1, NULL, 0 );
 
@@ -163,47 +162,57 @@ ModelExecute(CreateModelStmt *stmt, DestReceiver *dest)
 {
 	TupOutputState *tstate;
 	TupleDesc   tupdesc;
+	int len;
 	// char *p, *p2;
 	// Datum options;
-	// ListCell  *lc;
+	ListCell  *lc;
 	StringInfoData  buf;
 	Datum res;
 	float4 out;
 	char *res_out;
 
 	initStringInfo(&buf);
-	// appendStringInfoChar(&buf, '{');
+	appendStringInfoChar(&buf, '{');
 
 
-	// foreach(lc, stmt->options)
-	// {        
-	// 	ModelOptElement *opt;
-	// 	opt = (ModelOptElement *) lfirst(lc);
-		
+	foreach(lc, stmt->options)
+	{        
+		ModelOptElement *opt;
+		opt = (ModelOptElement *) lfirst(lc);
+				
 
-		// if (opt->parm == MODEL_PARAMETER_TARGET)
-		// {
-		// 	// char *str = quotation(opt->value);
-		// 	ListCell *lc2 =  lfirst(opt->elemetls);
+		elog(WARNING, "ModelOptElement parm=%d value=%s", opt->parm, opt->value);
+		if (opt->parm == MODEL_PARAMETER_TARGET)
+		{
+			appendStringInfo(&buf, "\"target\":\"%s\"", (char*)opt->value);
+		}
+		else
+		{
+			if (opt->value){
+				appendStringInfo(&buf, "\"ignored\":[\"%s\"]",opt->value);
+			}
+			else
+			{
+				ListCell  *lc2;
+				StrModelElement *el;
+				appendStringInfo(&buf, "\"ignored\":[");
+				foreach( lc2, opt->elements)
+				{
+					el = (StrModelElement *) lfirst(lc2);
+					appendStringInfo(&buf,"\"%s\",", el->value);
+				}
+				len = buf.len;
+				*(buf.data + len - 1) = ']';
+			}
+		}
+		appendStringInfo(&buf, ",");
+	}
 
-		// 	appendStringInfo(&buf, "\"TARGET\":\"%s\"", (char*)lc2->ptr_value);
-		// 	// pfree(str);
-		// }
-		// else
-		// {
-		// 	appendStringInfo(&buf, "\"IGNORED\":[\"%s\"]",opt->value);
-		// }
+	len = buf.len;
+	*(buf.data + len - 1) = '}';
+	elog(WARNING, "***** options : %s", buf.data);
 
-		// appendStringInfo(&buf, ", ");
-	// }
-	// p2 = buf.data + len;
-	// len = buf.len - len;
-
-	// parms = palloc(len);
-	// p = parms;
-	// while (len --)
-	// 	*p++ = *p2++;
-	// *--p = '\0';
+	resetStringInfo(&buf);	
 
 	appendStringInfo(&buf, "{\"ignored\":[\"name\"], \"target\":\"res\"}");
 

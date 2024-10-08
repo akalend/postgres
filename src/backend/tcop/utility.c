@@ -2145,7 +2145,6 @@ UtilityTupleDescriptor(Node *parsetree)
 		case T_PredictModelStmt:
 			{
 				PredictModelStmt *n = (PredictModelStmt *) parsetree;
-				elog(WARNING, "%s:%d tablename=%s", __FUNCTION__,__LINE__, n->tablename);
 				return GetPredictModelResultDesc(n);
 			}
 
