@@ -75,6 +75,7 @@ SecLabelSupportsObjectType(ObjectType objtype)
 		case OBJECT_FDW:
 		case OBJECT_FOREIGN_SERVER:
 		case OBJECT_INDEX:
+		case OBJECT_MODEL:
 		case OBJECT_OPCLASS:
 		case OBJECT_OPERATOR:
 		case OBJECT_OPFAMILY:

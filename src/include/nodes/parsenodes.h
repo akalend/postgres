@@ -4091,4 +4091,15 @@ typedef struct StrModelElement
 	char 		*value;
 } StrModelElement;
 
+
+typedef struct PredictModelStmt
+{
+	NodeTag			type;
+	ObjectType		objectType;		/* OBJECT_FUNCTION, OBJECT_TRIGGER, etc */
+	char	   		*modelname;		/* Model name */
+	char	   		*tablename;		/* data table for learning dataset  */
+} PredictModelStmt;
+
+
+
 #endif							/* PARSENODES_H */

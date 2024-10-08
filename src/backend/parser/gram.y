@@ -297,7 +297,7 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 		AnalyzeStmt CallStmt ClosePortalStmt ClusterStmt CommentStmt
 		ConstraintsSetStmt CopyStmt CreateAsStmt CreateCastStmt
 		CreateDomainStmt CreateExtensionStmt CreateGroupStmt CreateOpClassStmt
-		CreateModelStmt
+		CreateModelStmt 
 		CreateOpFamilyStmt AlterOpFamilyStmt CreatePLangStmt
 		CreateSchemaStmt CreateSeqStmt CreateStmt CreateStatsStmt CreateTableSpaceStmt
 		CreateFdwStmt CreateForeignServerStmt CreateForeignTableStmt
@@ -667,6 +667,7 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 /*
  * MODEL options
  */
+%type <node>	PredictModelStmt
 %type <node>	OptModelElement 
 %type <list>	OptModelElements OptModelElementList
 %type <node>	StrModelElement
@@ -756,7 +757,7 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 
 	PARALLEL PARAMETER PARSER PARTIAL PARTITION PASSING PASSWORD
 	PLACING PLANS POLICY
-	POSITION PRECEDING PRECISION PRESERVE PREPARE PREPARED PRIMARY
+	POSITION PRECEDING PRECISION PREDICT PRESERVE PREPARE PREPARED PRIMARY
 	PRIOR PRIVILEGES PROCEDURAL PROCEDURE PROCEDURES PROGRAM PUBLICATION
 
 	QUOTE
@@ -1080,6 +1081,7 @@ stmt:
 			| LockStmt
 			| MergeStmt
 			| NotifyStmt
+			| PredictModelStmt
 			| PrepareStmt
 			| ReassignOwnedStmt
 			| ReindexStmt
@@ -6351,37 +6353,37 @@ enum_val_list:	Sconst
  *
  *****************************************************************************/
 CreateModelStmt:
-			CREATE MODEL name   '(' OptModelElementList ')' FROM name
-				{
-					CreateModelStmt *n = makeNode(CreateModelStmt);
-					n->objectType = OBJECT_MODEL;
-					n->modelname = $3;
-					n->tablename = $8;
-					n->options = $5;
-					n->modelclass = CREATE_MODEL_CLASSIFICATION;
-					$$ = (Node *) n;
-				}
-			| CREATE CLASSIFICATION MODEL name '(' OptModelElementList ')' FROM name
-				{
-					CreateModelStmt *n = makeNode(CreateModelStmt);
-					n->objectType = OBJECT_MODEL;
-					n->modelname = $4;
-					n->tablename = $9;
-					n->options = $6;
-					n->modelclass = CREATE_MODEL_CLASSIFICATION;
-					$$ = (Node *) n;
-				}
-			| CREATE REGRESSION MODEL name '(' OptModelElementList ')' FROM name
-				{
-					CreateModelStmt *n = makeNode(CreateModelStmt);
-					n->objectType = OBJECT_MODEL;
-					n->modelname = $4;
-					n->tablename = $9;
-					n->options = $6;
-					n->modelclass = CREATE_MODEL_REGRESSION;
-					$$ = (Node *) n;
-				}
-		;
+	CREATE MODEL name   '(' OptModelElementList ')' FROM name
+		{
+			CreateModelStmt *n = makeNode(CreateModelStmt);
+			n->objectType = OBJECT_MODEL;
+			n->modelname = $3;
+			n->tablename = $8;
+			n->options = $5;
+			n->modelclass = CREATE_MODEL_CLASSIFICATION;
+			$$ = (Node *) n;
+		}
+	| CREATE CLASSIFICATION MODEL name '(' OptModelElementList ')' FROM name
+		{
+			CreateModelStmt *n = makeNode(CreateModelStmt);
+			n->objectType = OBJECT_MODEL;
+			n->modelname = $4;
+			n->tablename = $9;
+			n->options = $6;
+			n->modelclass = CREATE_MODEL_CLASSIFICATION;
+			$$ = (Node *) n;
+		}
+	| CREATE REGRESSION MODEL name '(' OptModelElementList ')' FROM name
+		{
+			CreateModelStmt *n = makeNode(CreateModelStmt);
+			n->objectType = OBJECT_MODEL;
+			n->modelname = $4;
+			n->tablename = $9;
+			n->options = $6;
+			n->modelclass = CREATE_MODEL_REGRESSION;
+			$$ = (Node *) n;
+		}
+	;
 
 	StrModelElementList:
 		StrModelElements							{ $$ = $1; }
@@ -6420,14 +6422,14 @@ CreateModelStmt:
 				n->value = pstrdup($2);
 				$$ = (Node *) n;
 			}
-		// | IGNORED '[' StrModelElementList ']'
-		// 	{
-		// 		ModelOptElement *n = makeNode(ModelOptElement);
-		// 		n->parm = MODEL_PARAMETER_IGNORE;
-		// 		n->value = NULL;
-		// 		n->elements = $3;
-		// 		$$ = (Node *) n;
-		// 	}
+		| IGNORED '[' StrModelElementList ']'
+			{
+				ModelOptElement *n = makeNode(ModelOptElement);
+				n->parm = MODEL_PARAMETER_IGNORE;
+				n->value = NULL;
+				n->elements = $3;
+				$$ = (Node *) n;
+			}
 		| IGNORED name
 			{
 				ModelOptElement *n = makeNode(ModelOptElement);
@@ -6437,6 +6439,34 @@ CreateModelStmt:
 				$$ = (Node *) n;
 			}
 	;
+
+
+/*****************************************************************************
+ *
+ *		QUERY :
+ *				PREDICT [MODEL] name FROM table
+ *
+ *****************************************************************************/
+
+PredictModelStmt:
+		PREDICT name  FROM name
+			{
+				PredictModelStmt *n = makeNode(PredictModelStmt);
+				n->objectType = OBJECT_MODEL;
+				n->modelname = $2;
+				n->tablename = $4;
+				$$ = (Node *) n;
+			}
+		| PREDICT MODEL name  FROM name
+			{
+				PredictModelStmt *n = makeNode(PredictModelStmt);
+				n->objectType = OBJECT_MODEL;
+				n->modelname = $3;
+				n->tablename = $5;
+				$$ = (Node *) n;
+			}
+	;
+
 
 /*****************************************************************************
  *
@@ -17242,6 +17272,7 @@ unreserved_keyword:
 			| PLANS
 			| POLICY
 			| PRECEDING
+			| PREDICT
 			| PREPARE
 			| PREPARED
 			| PRESERVE
@@ -17845,6 +17876,7 @@ bare_label_keyword:
 			| POLICY
 			| POSITION
 			| PRECEDING
+			| PREDICT
 			| PREPARE
 			| PREPARED
 			| PRESERVE

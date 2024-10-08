@@ -2066,6 +2066,7 @@ stringify_grant_objtype(ObjectType objtype)
 		case OBJECT_FOREIGN_TABLE:
 		case OBJECT_INDEX:
 		case OBJECT_MATVIEW:
+		case OBJECT_MODEL:
 		case OBJECT_OPCLASS:
 		case OBJECT_OPERATOR:
 		case OBJECT_OPFAMILY:
@@ -2149,6 +2150,7 @@ stringify_adefprivs_objtype(ObjectType objtype)
 		case OBJECT_FOREIGN_TABLE:
 		case OBJECT_INDEX:
 		case OBJECT_MATVIEW:
+		case OBJECT_MODEL:
 		case OBJECT_OPCLASS:
 		case OBJECT_OPERATOR:
 		case OBJECT_OPFAMILY:
