@@ -1078,11 +1078,12 @@ standard_ProcessUtility(PlannedStmt *pstmt,
 		case T_CreateModelStmt:
 			{
 				CreateModelStmt *stmt = (CreateModelStmt*) parsetree;
-				ModelExecute(stmt, dest);
+				CreateModelExecuteStmt(stmt, dest);
 				break;
 			}
 		case T_PredictModelStmt:
-				elog(LOG, "call PredictModel() %s:%d", __FUNCTION__,__LINE__);
+				CreateModelStmt *stmt = (CreateModelStmt*) parsetree;
+				PredictModelExecuteStmt(stmt,dest);
 				break;
 		default:
 			/* All other statement types have event trigger support */

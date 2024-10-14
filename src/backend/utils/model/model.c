@@ -1,15 +1,18 @@
 #include "postgres.h"
 #include "c.h"
 #include "fmgr.h"
+#include "miscadmin.h"
 
 
 #include "access/genam.h"
+#include "access/heapam.h"
 #include "access/table.h"
 #include "access/tableam.h"
 #include "access/stratnum.h"
 #include "catalog/pg_attribute.h"
 #include "catalog/pg_namespace.h"
 #include "catalog/pg_proc.h"
+#include "utils/lsyscache.h"
 #include "executor/tuptable.h"
 #include "utils/fmgroids.h"
 #include "utils/snapmgr.h"
@@ -26,6 +29,7 @@
 #include "utils/model.h"
 #include "utils/rel.h"
 #include "utils/syscache.h"
+
 // #include "utils/varlena.h"
 
 
@@ -33,47 +37,13 @@
 #define QUOTEMARK '"'
 
 
+static Form_pg_class GetPredictTableFormByName(const char *tablename);
+
+
 // сделать shmem
 static Oid mlJsonWrapperOid = InvalidOid;
-
-// static char*  quotation(char* in);
-
-
-inline char* 
-strip(char *p)
-{
-    char *p2 = p;
-
-    while(*p2 == ' ' || *p2 == ',' )
-        p2++;
-    return p2;
-}
-
-// static char* 
-// quotation(char* in)
-// {
-//     char * out, *p , *p2;
-//     p = in;
-
-//     elog(WARNING, "text='%s'", p);
-//     p2 = out = palloc0(256);
-    
-//    while (p = strip(p))
-//     {    
-//         if (*p == 0)
-//             break;
-//         *(p2++) = QUOTEMARK;
-//         while ( isalpha(*p) || isdigit(*p) )
-//         {
-//             *p2++ = *p++ ;
-//         }
-//         *(p2++) = QUOTEMARK;
-//         *(p2++) = ',';
-//     }
-//     *(p2--) = '\0'; 
-//     *(p2--) = '\0'; 
-//     return out;
-// }
+// static Oid PredictTableOid = InvalidOid;
+static Oid MetadataTableOid = InvalidOid;
 
 
 
@@ -93,6 +63,30 @@ GetCreateModelResultDesc(void)
 }
 
 
+/**
+ * @TODO тут нужно распарсить tablename, если в нем указано tablespace, то использовать tablespace
+ * и еще посмотреть в path_search.
+ * */
+static Form_pg_class
+GetPredictTableFormByName(const char *tablename)
+{
+	HeapTuple tup;
+	Form_pg_class form;
+	Oid PredictTableOid;
+
+	PredictTableOid = get_relname_relid(tablename,(Oid) PG_PUBLIC_NAMESPACE);
+
+	tup = SearchSysCache1(RELOID, ObjectIdGetDatum(PredictTableOid));
+
+	if (!HeapTupleIsValid(tup))
+	    elog(ERROR, "cache lookup failed for relation %d", PredictTableOid);
+	form = (Form_pg_class) GETSTRUCT(tup);
+
+	ReleaseSysCache(tup);
+	return form;
+}
+
+
 
 /*
  * Get a tuple descriptor for PREDICT MODEL
@@ -107,16 +101,10 @@ TupleDesc GetPredictModelResultDesc(PredictModelStmt *node){
 	HeapTuple tup;
 	ScanKeyData skey[1];
 	Form_pg_class form;
+	Oid PredictTableOid;
 
-	Oid reloid  = get_relname_relid((const char*)node->tablename,(Oid) PG_PUBLIC_NAMESPACE);
-
-	tup = SearchSysCache1(RELOID, ObjectIdGetDatum(reloid));
-
-	if (!HeapTupleIsValid(tup))
-	    elog(ERROR, "cache lookup failed for relation %d", reloid);
-	form = (Form_pg_class) GETSTRUCT(tup);
-
-	ReleaseSysCache(tup);
+	form = GetPredictTableFormByName((const char*)node->tablename);
+	PredictTableOid = form->oid;
 
 	tupdesc = CreateTemplateTupleDesc(form->relnatts);
 
@@ -126,9 +114,9 @@ TupleDesc GetPredictModelResultDesc(PredictModelStmt *node){
 	scan = index_beginscan(rel, idxrel, GetTransactionSnapshot(), 1, 0);
 
 	ScanKeyInit(&skey[0],
-				Anum_pg_attribute_attrelid, 
+				Anum_pg_attribute_attrelid,
 				BTEqualStrategyNumber, F_INT2EQ,
-				Int16GetDatum(reloid));
+				Int16GetDatum(PredictTableOid));
 
 	index_rescan(scan, skey, 1, NULL, 0 );
 
@@ -144,7 +132,7 @@ TupleDesc GetPredictModelResultDesc(PredictModelStmt *node){
 		TupleDescInitEntry(tupdesc, (AttrNumber) record->attnum,  NameStr(record->attname),
 							record->atttypid, -1, 0);
 	}
-	
+
 	index_endscan(scan);
 	ExecDropSingleTupleTableSlot(slot);
 
@@ -154,34 +142,145 @@ TupleDesc GetPredictModelResultDesc(PredictModelStmt *node){
 	return tupdesc;
 }
 
+void
+PredictModelExecuteStmt(CreateModelStmt *stmt, DestReceiver *dest)
+{
+	Relation rel;
+	HeapTuple tup;
+	TableScanDesc scan;
+	SysScanDesc sscan;
+	TupleDesc tupdesc;
+	// TupOutputState *tstate;
+	// Datum *values;
+	// bool *nulls;
+	// Oid *typeOids;
+	ScanKeyData skey[1];
+	Form_pg_class form;
+	MemoryContext resultcxt, oldcxt;
+	Oid PredictTableOid;
+
+	/* This is the context that we will allocate our output data in */
+	resultcxt = CurrentMemoryContext;
+	oldcxt = MemoryContextSwitchTo(resultcxt);
+
+	form = GetPredictTableFormByName((const char*)stmt->tablename);
+	tupdesc = CreateTemplateTupleDesc(form->relnatts);
+
+	PredictTableOid = form->oid;
+
+	// values = (Datum*)palloc0( sizeof(Datum) * form->relnatts);
+	// nulls = (bool *) palloc0(sizeof(bool) * form->relnatts);
+	// typeOids = (Oid*)palloc( sizeof(Oid) * form->relnatts);
+
+	/* attribute table scanning */
+	rel = table_open(AttributeRelationId, RowExclusiveLock);
+
+	ScanKeyInit(&skey[0],
+				Anum_pg_attribute_attrelid,
+				BTEqualStrategyNumber, F_INT2EQ,
+				Int16GetDatum(PredictTableOid));
+
+
+	sscan = systable_beginscan(rel, AttributeRelidNumIndexId, true,
+							   SnapshotSelf, 1, &skey[0]);
+
+	while ( tup = systable_getnext(sscan))
+	{
+		Form_pg_attribute record;
+		record = (Form_pg_attribute) GETSTRUCT(tup);
+		if (record->attnum < 0) continue;
+
+		TupleDescInitEntry(tupdesc, (AttrNumber) record->attnum,  NameStr(record->attname),
+							record->atttypid, -1, 0);
+		// elog(WARNING, "%s:%d", NameStr(record->attname), record->atttypid);
+	}
+
+
+	systable_endscan(sscan);
+	table_close(rel, RowExclusiveLock);
+
+	/* end create tupledesc of out data*/
+
+
+	// /* prepare for projection of tuples */
+	// tstate = begin_tup_output_tupdesc(dest, tupdesc, &TTSOpsVirtual);
+
+
+	rel = table_open(PredictTableOid, AccessShareLock);
+	// Snapshot s = GetLatestSnapshot();
+
+	scan = table_beginscan(rel, SnapshotSelf, 0, NULL);
+
+	while ((tup = heap_getnext(scan, ForwardScanDirection)) != NULL)
+	{
+
+		CHECK_FOR_INTERRUPTS();
+		// HeapTupleHeaderGetNatts(tup->t_data);
+		if (!HeapTupleIsValid(tup))
+		{
+			elog(ERROR, " lookup failed for tuple");
+		}
+		/* Data row */
+		elog(WARNING, "tuple %p len=%d", (void*)tup, 0);
+		// FormData_test t = (FormData_test) GETSTRUCT(tup);
+		// heap_deform_tuple(tup, 	tupdesc, values, nulls);
+		// do_tup_output(tstate, values, nulls);
+	}
+	// end_tup_output(tstate);
+
+	table_endscan(scan);
+	table_close(rel, AccessShareLock);
+
+
+
+
+
+
+
+	/* send RowDescription */
+	// example 1
+	// iterate some time
+		// values[0] = CStringGetTextDatum("...");
+		// values[1] = Int64GetDatum(123);
+
+	/* send RowDescription */
+
+
+	MemoryContextSwitchTo(oldcxt);
+}
+
 /*
  * Model accuratly 
  */
 void
-ModelExecute(CreateModelStmt *stmt, DestReceiver *dest)
+CreateModelExecuteStmt(CreateModelStmt *stmt, DestReceiver *dest)
 {
 	TupOutputState *tstate;
 	TupleDesc   tupdesc;
 	int len;
-	// char *p, *p2;
-	// Datum options;
 	ListCell  *lc;
 	StringInfoData  buf;
 	Datum res;
 	float4 out;
 	char *res_out;
+	Oid idxoid;
+	// Oid reloid;
+	Relation rel, idxrel;
+	IndexScanDesc scan;
+	TupleTableSlot* slot;
+	ScanKeyData skey[1];
+	NameData	name_name;
+	bool found = false;
 
+	namestrcpy(&name_name, stmt->modelname);
 	initStringInfo(&buf);
 	appendStringInfoChar(&buf, '{');
-
 
 	foreach(lc, stmt->options)
 	{        
 		ModelOptElement *opt;
 		opt = (ModelOptElement *) lfirst(lc);
 				
-
-		elog(WARNING, "ModelOptElement parm=%d value=%s", opt->parm, opt->value);
 		if (opt->parm == MODEL_PARAMETER_TARGET)
 		{
 			appendStringInfo(&buf, "\"target\":\"%s\"", (char*)opt->value);
@@ -210,20 +309,11 @@ ModelExecute(CreateModelStmt *stmt, DestReceiver *dest)
 
 	len = buf.len;
 	*(buf.data + len - 1) = '}';
-	elog(WARNING, "***** options : %s", buf.data);
-
-	resetStringInfo(&buf);	
-
-	appendStringInfo(&buf, "{\"ignored\":[\"name\"], \"target\":\"res\"}");
-
-	// buf.data[buf.len-2] = '}';
 
 	if (mlJsonWrapperOid == InvalidOid)
 	{
-		mlJsonWrapperOid = GetProcOidByName("ml_learn");
+		mlJsonWrapperOid = GetProcOidByName(ML_MODEL_LEARN_FUNCTION);
 	}
-	elog(WARNING, "call func by oid %d", mlJsonWrapperOid);
-	elog(WARNING, "options %s", buf.data);
 	res = OidFunctionCall4(  mlJsonWrapperOid, 
 					CStringGetTextDatum(stmt->modelname),
 					DatumGetInt32(stmt->modelclass),
@@ -242,6 +332,50 @@ ModelExecute(CreateModelStmt *stmt, DestReceiver *dest)
 	out = DatumGetFloat8(res);
 	res_out = psprintf("%g", out);
 
+
+	/* save metadata  */
+
+	if (MetadataTableOid == InvalidOid)
+		MetadataTableOid  = get_relname_relid(ML_MODEL_METADATA, PG_PUBLIC_NAMESPACE);
+	idxoid  = get_relname_relid(ML_MODEL_METADATA_IDX, PG_PUBLIC_NAMESPACE);
+
+// elog(WARNING, "oid %d/%d", reloid,idxoid);
+
+	rel = table_open(MetadataTableOid, RowExclusiveLock);
+	idxrel = index_open(ProcedureOidIndexId, AccessShareLock);
+
+
+	scan = index_beginscan(rel, idxrel, GetTransactionSnapshot(), 1 /* nkeys */, 0 /* norderbys */);
+
+	ScanKeyInit(&skey[0],
+				Anum_ml_name ,
+				BTGreaterEqualStrategyNumber, F_NAMEEQ,
+				NameGetDatum(&name_name));
+
+	index_rescan(scan, skey, 1, NULL /* orderbys */, 0 /* norderbys */);
+
+	slot = table_slot_create(rel, NULL);
+	while (index_getnext_slot(scan, ForwardScanDirection, slot))
+	{
+		bool should_free;
+		HeapTuple tup = ExecFetchSlotHeapTuple(slot, false, &should_free);
+		if(should_free) heap_freetuple(tup);
+		elog(WARNING,"OK, FOUND");
+		found = true;
+	}
+	if (!found)
+	{
+		elog(WARNING,"record NOT FOUND");
+	}
+
+
+	index_close(idxrel, AccessShareLock);
+	table_close(rel, RowExclusiveLock);
+
+	index_endscan(scan);
+	ExecDropSingleTupleTableSlot(slot);
+
+
 	/* Send it */
 	do_text_output_oneline(tstate, res_out);
 
@@ -256,7 +390,6 @@ GetProcOidByName(const char* proname)
 	NameData fname;
 	IndexScanDesc scan;
 	TupleTableSlot* slot;
-
 	HeapTuple tup;
 	ScanKeyData skey[1];
 	Name name = &fname;
@@ -273,7 +406,6 @@ GetProcOidByName(const char* proname)
 				Anum_pg_proc_proname , 
 				BTGreaterEqualStrategyNumber, F_NAMEEQ,
 				NameGetDatum(name));
-
 
 
 	index_rescan(scan, skey, 1, NULL /* orderbys */, 0 /* norderbys */);
@@ -306,6 +438,5 @@ GetProcOidByName(const char* proname)
 	if (found_oid == InvalidOid)
 		elog(ERROR, "procedure %s not found", proname);
 
-	// elog(WARNING, "oid=%d", found_oid);
 	return found_oid;
 }
