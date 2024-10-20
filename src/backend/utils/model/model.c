@@ -150,10 +150,9 @@ PredictModelExecuteStmt(CreateModelStmt *stmt, DestReceiver *dest)
 	TableScanDesc scan;
 	SysScanDesc sscan;
 	TupleDesc tupdesc;
-	// TupOutputState *tstate;
-	// Datum *values;
-	// bool *nulls;
-	// Oid *typeOids;
+	TupOutputState *tstate;
+	Datum *values;
+	bool *nulls;
 	ScanKeyData skey[1];
 	Form_pg_class form;
 	MemoryContext resultcxt, oldcxt;
@@ -168,9 +167,8 @@ PredictModelExecuteStmt(CreateModelStmt *stmt, DestReceiver *dest)
 
 	PredictTableOid = form->oid;
 
-	// values = (Datum*)palloc0( sizeof(Datum) * form->relnatts);
-	// nulls = (bool *) palloc0(sizeof(bool) * form->relnatts);
-	// typeOids = (Oid*)palloc( sizeof(Oid) * form->relnatts);
+	values = (Datum*)palloc0( sizeof(Datum) * form->relnatts);
+	nulls = (bool *) palloc0(sizeof(bool) * form->relnatts);
 
 	/* attribute table scanning */
 	rel = table_open(AttributeRelationId, RowExclusiveLock);
@@ -184,7 +182,7 @@ PredictModelExecuteStmt(CreateModelStmt *stmt, DestReceiver *dest)
 	sscan = systable_beginscan(rel, AttributeRelidNumIndexId, true,
 							   SnapshotSelf, 1, &skey[0]);
 
-	while ( tup = systable_getnext(sscan))
+	while ((tup = systable_getnext(sscan)) != NULL)
 	{
 		Form_pg_attribute record;
 		record = (Form_pg_attribute) GETSTRUCT(tup);
@@ -203,13 +201,13 @@ PredictModelExecuteStmt(CreateModelStmt *stmt, DestReceiver *dest)
 
 
 	// /* prepare for projection of tuples */
-	// tstate = begin_tup_output_tupdesc(dest, tupdesc, &TTSOpsVirtual);
+	tstate = begin_tup_output_tupdesc(dest, tupdesc, &TTSOpsVirtual);
 
 
 	rel = table_open(PredictTableOid, AccessShareLock);
 	// Snapshot s = GetLatestSnapshot();
 
-	scan = table_beginscan(rel, SnapshotSelf, 0, NULL);
+	scan = table_beginscan(rel, GetLatestSnapshot(), 0, NULL);
 
 	while ((tup = heap_getnext(scan, ForwardScanDirection)) != NULL)
 	{
@@ -221,29 +219,16 @@ PredictModelExecuteStmt(CreateModelStmt *stmt, DestReceiver *dest)
 			elog(ERROR, " lookup failed for tuple");
 		}
 		/* Data row */
-		elog(WARNING, "tuple %p len=%d", (void*)tup, 0);
-		// FormData_test t = (FormData_test) GETSTRUCT(tup);
-		// heap_deform_tuple(tup, 	tupdesc, values, nulls);
-		// do_tup_output(tstate, values, nulls);
+
+		HeapScanDesc sscan = (HeapScanDesc) scan;
+
+		heap_deform_tuple(tup, 	tupdesc, values, nulls);
+		do_tup_output(tstate, values, nulls);
 	}
-	// end_tup_output(tstate);
+	end_tup_output(tstate);
 
 	table_endscan(scan);
 	table_close(rel, AccessShareLock);
-
-
-
-
-
-
-
-	/* send RowDescription */
-	// example 1
-	// iterate some time
-		// values[0] = CStringGetTextDatum("...");
-		// values[1] = Int64GetDatum(123);
-
-	/* send RowDescription */
 
 
 	MemoryContextSwitchTo(oldcxt);
@@ -337,6 +322,7 @@ CreateModelExecuteStmt(CreateModelStmt *stmt, DestReceiver *dest)
 
 	if (MetadataTableOid == InvalidOid)
 		MetadataTableOid  = get_relname_relid(ML_MODEL_METADATA, PG_PUBLIC_NAMESPACE);
+	
 	idxoid  = get_relname_relid(ML_MODEL_METADATA_IDX, PG_PUBLIC_NAMESPACE);
 
 // elog(WARNING, "oid %d/%d", reloid,idxoid);
