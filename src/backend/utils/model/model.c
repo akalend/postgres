@@ -106,7 +106,7 @@ TupleDesc GetPredictModelResultDesc(PredictModelStmt *node){
 	form = GetPredictTableFormByName((const char*)node->tablename);
 	PredictTableOid = form->oid;
 
-	tupdesc = CreateTemplateTupleDesc(form->relnatts);
+	tupdesc = CreateTemplateTupleDesc(form->relnatts + 1);
 
 	rel = table_open(AttributeRelationId, RowExclusiveLock);
 	idxrel = index_open(AttributeRelidNumIndexId, AccessShareLock);
@@ -129,9 +129,12 @@ TupleDesc GetPredictModelResultDesc(PredictModelStmt *node){
 		tup = ExecFetchSlotHeapTuple(slot, false, &should_free);
 		record = (Form_pg_attribute) GETSTRUCT(tup);
 		if (record->attnum < 0) continue;
-		TupleDescInitEntry(tupdesc, (AttrNumber) record->attnum,  NameStr(record->attname),
+		TupleDescInitEntry(tupdesc, (AttrNumber) record->attnum, NameStr(record->attname),
 							record->atttypid, -1, 0);
 	}
+
+	// TupleDescInitEntry(tupdesc, (AttrNumber) form->relnatts + 1, "class",
+	// 						INT4OID, -1, 0);
 
 	index_endscan(scan);
 	ExecDropSingleTupleTableSlot(slot);
@@ -167,8 +170,8 @@ PredictModelExecuteStmt(CreateModelStmt *stmt, DestReceiver *dest)
 
 	PredictTableOid = form->oid;
 
-	values = (Datum*)palloc0( sizeof(Datum) * form->relnatts);
-	nulls = (bool *) palloc0(sizeof(bool) * form->relnatts);
+	values = (Datum*)palloc0( sizeof(Datum) * (form->relnatts + 1));
+	nulls = (bool *) palloc0(sizeof(bool) * (form->relnatts + 1));
 
 	/* attribute table scanning */
 	rel = table_open(AttributeRelationId, RowExclusiveLock);
@@ -190,8 +193,10 @@ PredictModelExecuteStmt(CreateModelStmt *stmt, DestReceiver *dest)
 
 		TupleDescInitEntry(tupdesc, (AttrNumber) record->attnum,  NameStr(record->attname),
 							record->atttypid, -1, 0);
-		// elog(WARNING, "%s:%d", NameStr(record->attname), record->atttypid);
 	}
+
+	// TupleDescInitEntry(tupdesc, (AttrNumber) form->relnatts,  "class",
+	// 					INT4OID, -1, 0);
 
 
 	systable_endscan(sscan);
@@ -209,20 +214,22 @@ PredictModelExecuteStmt(CreateModelStmt *stmt, DestReceiver *dest)
 
 	scan = table_beginscan(rel, GetLatestSnapshot(), 0, NULL);
 
+
+	// elog(WARNING, "tuples %d", form->relnatts);
 	while ((tup = heap_getnext(scan, ForwardScanDirection)) != NULL)
 	{
 
+		// HeapScanDesc sscan;
 		CHECK_FOR_INTERRUPTS();
-		// HeapTupleHeaderGetNatts(tup->t_data);
 		if (!HeapTupleIsValid(tup))
 		{
 			elog(ERROR, " lookup failed for tuple");
 		}
+
 		/* Data row */
-
-		HeapScanDesc sscan = (HeapScanDesc) scan;
-
 		heap_deform_tuple(tup, 	tupdesc, values, nulls);
+
+		// values[form->relnatts] =  Int32GetDatum (777);
 		do_tup_output(tstate, values, nulls);
 	}
 	end_tup_output(tstate);
@@ -248,8 +255,6 @@ CreateModelExecuteStmt(CreateModelStmt *stmt, DestReceiver *dest)
 	Datum res;
 	float4 out;
 	char *res_out;
-	Oid idxoid;
-	// Oid reloid;
 	Relation rel, idxrel;
 	IndexScanDesc scan;
 	TupleTableSlot* slot;
@@ -323,9 +328,6 @@ CreateModelExecuteStmt(CreateModelStmt *stmt, DestReceiver *dest)
 	if (MetadataTableOid == InvalidOid)
 		MetadataTableOid  = get_relname_relid(ML_MODEL_METADATA, PG_PUBLIC_NAMESPACE);
 	
-	idxoid  = get_relname_relid(ML_MODEL_METADATA_IDX, PG_PUBLIC_NAMESPACE);
-
-// elog(WARNING, "oid %d/%d", reloid,idxoid);
 
 	rel = table_open(MetadataTableOid, RowExclusiveLock);
 	idxrel = index_open(ProcedureOidIndexId, AccessShareLock);
