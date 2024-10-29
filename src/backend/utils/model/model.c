@@ -106,7 +106,7 @@ TupleDesc GetPredictModelResultDesc(PredictModelStmt *node){
 	form = GetPredictTableFormByName((const char*)node->tablename);
 	PredictTableOid = form->oid;
 
-	tupdesc = CreateTemplateTupleDesc(form->relnatts + 1);
+	tupdesc = CreateTemplateTupleDesc(form->relnatts +1);
 
 	rel = table_open(AttributeRelationId, RowExclusiveLock);
 	idxrel = index_open(AttributeRelidNumIndexId, AccessShareLock);
@@ -133,8 +133,8 @@ TupleDesc GetPredictModelResultDesc(PredictModelStmt *node){
 							record->atttypid, -1, 0);
 	}
 
-	// TupleDescInitEntry(tupdesc, (AttrNumber) form->relnatts + 1, "class",
-	// 						INT4OID, -1, 0);
+	TupleDescInitEntry(tupdesc, (AttrNumber) (form->relnatts + 1), "class",
+							INT8OID, -1, 0);
 
 	index_endscan(scan);
 	ExecDropSingleTupleTableSlot(slot);
@@ -166,7 +166,7 @@ PredictModelExecuteStmt(CreateModelStmt *stmt, DestReceiver *dest)
 	oldcxt = MemoryContextSwitchTo(resultcxt);
 
 	form = GetPredictTableFormByName((const char*)stmt->tablename);
-	tupdesc = CreateTemplateTupleDesc(form->relnatts);
+	tupdesc = CreateTemplateTupleDesc(form->relnatts + 1);
 
 	PredictTableOid = form->oid;
 
@@ -195,9 +195,9 @@ PredictModelExecuteStmt(CreateModelStmt *stmt, DestReceiver *dest)
 							record->atttypid, -1, 0);
 	}
 
-	// TupleDescInitEntry(tupdesc, (AttrNumber) form->relnatts,  "class",
-	// 					INT4OID, -1, 0);
+	TupleDescInitEntry(tupdesc, form->relnatts + 1, "class", INT8OID, -1, 0);
 
+	elog(WARNING, "att count %d", form->relnatts);
 
 	systable_endscan(sscan);
 	table_close(rel, RowExclusiveLock);
@@ -218,8 +218,6 @@ PredictModelExecuteStmt(CreateModelStmt *stmt, DestReceiver *dest)
 	// elog(WARNING, "tuples %d", form->relnatts);
 	while ((tup = heap_getnext(scan, ForwardScanDirection)) != NULL)
 	{
-
-		// HeapScanDesc sscan;
 		CHECK_FOR_INTERRUPTS();
 		if (!HeapTupleIsValid(tup))
 		{
@@ -229,7 +227,7 @@ PredictModelExecuteStmt(CreateModelStmt *stmt, DestReceiver *dest)
 		/* Data row */
 		heap_deform_tuple(tup, 	tupdesc, values, nulls);
 
-		// values[form->relnatts] =  Int32GetDatum (777);
+		values[form->relnatts] =  777;
 		do_tup_output(tstate, values, nulls);
 	}
 	end_tup_output(tstate);
