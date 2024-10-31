@@ -44,6 +44,7 @@ static Form_pg_class GetPredictTableFormByName(const char *tablename);
 static Oid mlJsonWrapperOid = InvalidOid;
 // static Oid PredictTableOid = InvalidOid;
 static Oid MetadataTableOid = InvalidOid;
+static Oid MetadataTableIdxOid = InvalidOid;
 
 
 
@@ -266,7 +267,7 @@ CreateModelExecuteStmt(CreateModelStmt *stmt, DestReceiver *dest)
 	appendStringInfoChar(&buf, '{');
 
 	foreach(lc, stmt->options)
-	{        
+	{
 		ModelOptElement *opt;
 		opt = (ModelOptElement *) lfirst(lc);
 				
@@ -325,11 +326,13 @@ CreateModelExecuteStmt(CreateModelStmt *stmt, DestReceiver *dest)
 	/* save metadata  */
 
 	if (MetadataTableOid == InvalidOid)
-		MetadataTableOid  = get_relname_relid(ML_MODEL_METADATA, PG_PUBLIC_NAMESPACE);
-	
+	{
+			MetadataTableOid  = get_relname_relid(ML_MODEL_METADATA, PG_PUBLIC_NAMESPACE);
+			MetadataTableIdxOid = get_relname_relid(ML_MODEL_METADATA_IDX, PG_PUBLIC_NAMESPACE);
+	}
 
 	rel = table_open(MetadataTableOid, RowExclusiveLock);
-	idxrel = index_open(ProcedureOidIndexId, AccessShareLock);
+	idxrel = index_open(MetadataTableIdxOid, AccessShareLock);
 
 
 	scan = index_beginscan(rel, idxrel, GetTransactionSnapshot(), 1 /* nkeys */, 0 /* norderbys */);
@@ -346,9 +349,25 @@ CreateModelExecuteStmt(CreateModelStmt *stmt, DestReceiver *dest)
 	{
 		bool should_free;
 		HeapTuple tup = ExecFetchSlotHeapTuple(slot, false, &should_free);
-		if(should_free) heap_freetuple(tup);
-		elog(WARNING,"OK, FOUND");
+		elog(WARNING,"OK, FOUND should_free=%d", should_free);
 		found = true;
+		// HeapTuple newtup = heap_copytuple(tup);
+		// ((Form_model) GETSTRUCT(newtup))->acc = Float4GetDatum(0.98765);
+
+		// // /* updates a heap tuple, keeping indexes current */
+		// CatalogTupleUpdate(rel, &newtup->t_self, newtup);
+		// heap_freetuple(newtup);
+
+
+		// heap_deform_tuple(tup, 	tupdesc, values, nulls);
+		// heap_modify_tuple(HeapTuple tuple,
+		// 		  TupleDesc tupleDesc,
+		// 		  Datum *replValues,
+		// 		  bool *replIsnull,
+		// 		  bool *doReplace)
+
+		if(should_free) heap_freetuple(tup);
+		break;
 	}
 	if (!found)
 	{
@@ -356,10 +375,11 @@ CreateModelExecuteStmt(CreateModelStmt *stmt, DestReceiver *dest)
 	}
 
 
+
+	index_endscan(scan);
 	index_close(idxrel, AccessShareLock);
 	table_close(rel, RowExclusiveLock);
 
-	index_endscan(scan);
 	ExecDropSingleTupleTableSlot(slot);
 
 
