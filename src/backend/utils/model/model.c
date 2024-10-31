@@ -134,7 +134,7 @@ TupleDesc GetPredictModelResultDesc(PredictModelStmt *node){
 	}
 
 	TupleDescInitEntry(tupdesc, (AttrNumber) (form->relnatts + 1), "class",
-							INT8OID, -1, 0);
+							INT4OID, -1, 0);
 
 	index_endscan(scan);
 	ExecDropSingleTupleTableSlot(slot);
@@ -154,8 +154,8 @@ PredictModelExecuteStmt(CreateModelStmt *stmt, DestReceiver *dest)
 	SysScanDesc sscan;
 	TupleDesc tupdesc;
 	TupOutputState *tstate;
-	Datum *values;
-	bool *nulls;
+	Datum *values, *outvalues;
+	bool *nulls, *outnulls;
 	ScanKeyData skey[1];
 	Form_pg_class form;
 	MemoryContext resultcxt, oldcxt;
@@ -170,8 +170,10 @@ PredictModelExecuteStmt(CreateModelStmt *stmt, DestReceiver *dest)
 
 	PredictTableOid = form->oid;
 
-	values = (Datum*)palloc0( sizeof(Datum) * (form->relnatts + 1));
-	nulls = (bool *) palloc0(sizeof(bool) * (form->relnatts + 1));
+	values = (Datum*)palloc0( sizeof(Datum) * form->relnatts);
+	nulls = (bool *) palloc0(sizeof(bool) * form->relnatts);
+	outvalues = (Datum*)palloc0( sizeof(Datum) * (form->relnatts + 1));
+	outnulls = (bool *) palloc0(sizeof(bool) * (form->relnatts + 1));
 
 	/* attribute table scanning */
 	rel = table_open(AttributeRelationId, RowExclusiveLock);
@@ -191,13 +193,11 @@ PredictModelExecuteStmt(CreateModelStmt *stmt, DestReceiver *dest)
 		record = (Form_pg_attribute) GETSTRUCT(tup);
 		if (record->attnum < 0) continue;
 
-		TupleDescInitEntry(tupdesc, (AttrNumber) record->attnum,  NameStr(record->attname),
+		TupleDescInitEntry(tupdesc, (AttrNumber) record->attnum, NameStr(record->attname),
 							record->atttypid, -1, 0);
 	}
 
-	TupleDescInitEntry(tupdesc, form->relnatts + 1, "class", INT8OID, -1, 0);
-
-	elog(WARNING, "att count %d", form->relnatts);
+	TupleDescInitEntry(tupdesc, (AttrNumber) form->relnatts+1, "class", INT4OID, -1, 0);
 
 	systable_endscan(sscan);
 	table_close(rel, RowExclusiveLock);
@@ -205,19 +205,16 @@ PredictModelExecuteStmt(CreateModelStmt *stmt, DestReceiver *dest)
 	/* end create tupledesc of out data*/
 
 
-	// /* prepare for projection of tuples */
+	/* prepare for projection of tuples */
 	tstate = begin_tup_output_tupdesc(dest, tupdesc, &TTSOpsVirtual);
 
 
 	rel = table_open(PredictTableOid, AccessShareLock);
-	// Snapshot s = GetLatestSnapshot();
-
 	scan = table_beginscan(rel, GetLatestSnapshot(), 0, NULL);
 
-
-	// elog(WARNING, "tuples %d", form->relnatts);
 	while ((tup = heap_getnext(scan, ForwardScanDirection)) != NULL)
 	{
+		int i;
 		CHECK_FOR_INTERRUPTS();
 		if (!HeapTupleIsValid(tup))
 		{
@@ -227,14 +224,18 @@ PredictModelExecuteStmt(CreateModelStmt *stmt, DestReceiver *dest)
 		/* Data row */
 		heap_deform_tuple(tup, 	tupdesc, values, nulls);
 
-		values[form->relnatts] =  777;
-		do_tup_output(tstate, values, nulls);
+		for (i=0; i < form->relnatts; i++)
+		{
+					outvalues[i] = values[i];
+					outnulls[i] = nulls[i];
+		}
+		outvalues[form->relnatts] = 777;
+		do_tup_output(tstate, outvalues, outnulls);
 	}
 	end_tup_output(tstate);
 
 	table_endscan(scan);
 	table_close(rel, AccessShareLock);
-
 
 	MemoryContextSwitchTo(oldcxt);
 }
