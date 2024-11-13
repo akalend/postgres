@@ -415,8 +415,8 @@ CreateModelExecuteStmt(CreateModelStmt *stmt, DestReceiver *dest)
 		s = read_whole_file(tmp_name, &file_length);
 		result = (text *) palloc(file_length + VARHDRSZ);
 
-		SET_VARSIZE(result, len + VARHDRSZ);
-		memcpy(VARDATA(result), s, len);
+		SET_VARSIZE(result, file_length + VARHDRSZ);
+		memcpy(VARDATA(result), s, file_length);
 		pfree(s);
 
 		elog(WARNING, "readfile %d bytes", file_length);		
@@ -524,6 +524,8 @@ read_whole_file(const char *filename, int *length)
 				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
 				 errmsg("file \"%s\" is too large", filename)));
 	bytes_to_read = (size_t) fst.st_size;
+	elog(WARNING, "bytes_to_read %d", bytes_to_read);
+
 
 	if ((file = AllocateFile(filename, PG_BINARY_R)) == NULL)
 		ereport(ERROR,
