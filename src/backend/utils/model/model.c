@@ -1,3 +1,5 @@
+#include <sys/stat.h>
+#include <errno.h>
 #include "postgres.h"
 #include "c.h"
 #include "fmgr.h"
@@ -9,6 +11,7 @@
 #include "access/table.h"
 #include "access/tableam.h"
 #include "access/stratnum.h"
+#include "catalog/indexing.h"
 #include "catalog/pg_attribute.h"
 #include "catalog/pg_namespace.h"
 #include "catalog/pg_proc.h"
@@ -38,6 +41,7 @@
 
 
 static Form_pg_class GetPredictTableFormByName(const char *tablename);
+static char * read_whole_file(const char *filename, int *length);
 
 
 // сделать shmem
@@ -249,6 +253,7 @@ CreateModelExecuteStmt(CreateModelStmt *stmt, DestReceiver *dest)
 {
 	TupOutputState *tstate;
 	TupleDesc   tupdesc;
+	HeapTuple tup;
 	int len;
 	ListCell  *lc;
 	StringInfoData  buf;
@@ -261,6 +266,11 @@ CreateModelExecuteStmt(CreateModelStmt *stmt, DestReceiver *dest)
 	ScanKeyData skey[1];
 	NameData	name_name;
 	bool found = false;
+	Datum  *values;
+	bool   *nulls, *doReplace;
+	struct stat st;
+	int rc;
+	const char* tmp_name = tempnam("/tmp/", "cbm_");
 
 	namestrcpy(&name_name, stmt->modelname);
 	initStringInfo(&buf);
@@ -304,11 +314,20 @@ CreateModelExecuteStmt(CreateModelStmt *stmt, DestReceiver *dest)
 	{
 		mlJsonWrapperOid = GetProcOidByName(ML_MODEL_LEARN_FUNCTION);
 	}
-	res = OidFunctionCall4(  mlJsonWrapperOid, 
+	res = OidFunctionCall5(  mlJsonWrapperOid, 
 					CStringGetTextDatum(stmt->modelname),
 					DatumGetInt32(stmt->modelclass),
 					CStringGetTextDatum(buf.data),
-					CStringGetTextDatum(stmt->tablename));
+					CStringGetTextDatum(stmt->tablename),
+					CStringGetTextDatum(tmp_name));
+
+
+	rc = stat(tmp_name, &st);
+	if (rc)
+	{
+		const char * errmsg = strerror(errno);
+		elog(ERROR, "Temporaly model file \"%s\" not found\n%s", tmp_name, errmsg);
+	}
 
 
 	/* need a tuple descriptor representing a single TEXT column */
@@ -331,9 +350,25 @@ CreateModelExecuteStmt(CreateModelStmt *stmt, DestReceiver *dest)
 			MetadataTableIdxOid = get_relname_relid(ML_MODEL_METADATA_IDX, PG_PUBLIC_NAMESPACE);
 	}
 
+
+	tupdesc = CreateTemplateTupleDesc(Natts_model);
+
+	TupleDescInitEntry(tupdesc, 1, "name", NAMEOID, -1, 0);
+	TupleDescInitEntry(tupdesc, 2, "file", TEXTOID, -1, 0);
+	TupleDescInitEntry(tupdesc, 3, "model_type", BPCHAROID, -1, 0); // 1042
+	TupleDescInitEntry(tupdesc, 4, "acc", FLOAT4OID, -1, 0);
+	TupleDescInitEntry(tupdesc, 5, "info", TEXTOID, -1, 0);
+	TupleDescInitEntry(tupdesc, 6, "args", TEXTOID, -1, 0);
+	TupleDescInitEntry(tupdesc, 7, "data", BYTEAOID, -1, 0);
+
+
+
 	rel = table_open(MetadataTableOid, RowExclusiveLock);
 	idxrel = index_open(MetadataTableIdxOid, AccessShareLock);
 
+	values = (Datum*)palloc0( sizeof(Datum) * Natts_model);
+	nulls = (bool *) palloc0(sizeof(bool) * Natts_model);
+	doReplace = (bool *) palloc0(sizeof(bool) * Natts_model);
 
 	scan = index_beginscan(rel, idxrel, GetTransactionSnapshot(), 1 /* nkeys */, 0 /* norderbys */);
 
@@ -348,33 +383,53 @@ CreateModelExecuteStmt(CreateModelStmt *stmt, DestReceiver *dest)
 	while (index_getnext_slot(scan, ForwardScanDirection, slot))
 	{
 		bool should_free;
-		HeapTuple tup = ExecFetchSlotHeapTuple(slot, false, &should_free);
-		elog(WARNING,"OK, FOUND should_free=%d", should_free);
-		found = true;
-		// HeapTuple newtup = heap_copytuple(tup);
-		// ((Form_model) GETSTRUCT(newtup))->acc = Float4GetDatum(0.98765);
-
-		// // /* updates a heap tuple, keeping indexes current */
-		// CatalogTupleUpdate(rel, &newtup->t_self, newtup);
-		// heap_freetuple(newtup);
-
-
-		// heap_deform_tuple(tup, 	tupdesc, values, nulls);
-		// heap_modify_tuple(HeapTuple tuple,
-		// 		  TupleDesc tupleDesc,
-		// 		  Datum *replValues,
-		// 		  bool *replIsnull,
-		// 		  bool *doReplace)
+		tup = ExecFetchSlotHeapTuple(slot, false, &should_free);
+		
+		heap_deform_tuple(tup,  tupdesc, values, nulls);
 
 		if(should_free) heap_freetuple(tup);
-		break;
+		elog(WARNING,"OK, FOUND should_free=%d", should_free);
+		found = true;
 	}
+
 	if (!found)
 	{
 		elog(WARNING,"record NOT FOUND");
 	}
+	else
+	{
+		int file_length = 0;
+		bytea *result;
+		char *s;
+		elog(WARNING, "name:%s type=%s acc=%g [%s]", DatumGetCString(values[0]), 
+			DatumGetCString(values[2]), DatumGetFloat4(values[3]), buf.data);
 
+		nulls[3] = false;
+		values[3] = Float4GetDatum(out);
+		doReplace[3]  = true;
 
+		nulls[5] = false;
+		values[5] = CStringGetTextDatum(buf.data);
+		doReplace[5]  = true;
+	
+		s = read_whole_file(tmp_name, &file_length);
+		result = (text *) palloc(file_length + VARHDRSZ);
+
+		SET_VARSIZE(result, len + VARHDRSZ);
+		memcpy(VARDATA(result), s, len);
+		pfree(s);
+
+		elog(WARNING, "readfile %d bytes", file_length);		
+		nulls[6] = false;
+		values[6] = PointerGetDatum(result);
+		doReplace[6]  = true;
+
+		tup = heap_modify_tuple(tup, tupdesc,values, nulls, doReplace);
+		if (HeapTupleIsValid(tup))
+		{
+			CatalogTupleUpdate(rel, &tup->t_self, tup);
+		}
+	}
 
 	index_endscan(scan);
 	index_close(idxrel, AccessShareLock);
@@ -387,6 +442,9 @@ CreateModelExecuteStmt(CreateModelStmt *stmt, DestReceiver *dest)
 	do_text_output_oneline(tstate, res_out);
 
 	end_tup_output(tstate);
+
+	if (rc == 0)
+		remove(tmp_name);
 }
 
 Oid
@@ -446,4 +504,44 @@ GetProcOidByName(const char* proname)
 		elog(ERROR, "procedure %s not found", proname);
 
 	return found_oid;
+}
+
+static char *
+read_whole_file(const char *filename, int *length)
+{
+	char	   *buf;
+	FILE	   *file;
+	size_t		bytes_to_read;
+	struct stat fst;
+
+	if (stat(filename, &fst) < 0)
+		ereport(ERROR,
+				(errcode_for_file_access(),
+				 errmsg("could not stat file \"%s\": %m", filename)));
+
+	if (fst.st_size > (MaxAllocSize - 1))
+		ereport(ERROR,
+				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+				 errmsg("file \"%s\" is too large", filename)));
+	bytes_to_read = (size_t) fst.st_size;
+
+	if ((file = AllocateFile(filename, PG_BINARY_R)) == NULL)
+		ereport(ERROR,
+				(errcode_for_file_access(),
+				 errmsg("could not open file \"%s\" for reading: %m",
+						filename)));
+
+	buf = (char *) palloc(bytes_to_read + 1);
+
+	*length = fread(buf, 1, bytes_to_read, file);
+
+	if (ferror(file))
+		ereport(ERROR,
+				(errcode_for_file_access(),
+				 errmsg("could not read file \"%s\": %m", filename)));
+
+	FreeFile(file);
+
+	buf[*length] = '\0';
+	return buf;
 }
