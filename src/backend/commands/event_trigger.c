@@ -943,6 +943,7 @@ EventTriggerSupportsObjectType(ObjectType obtype)
 			/* no support for global objects */
 			return false;
 		case OBJECT_EVENT_TRIGGER:
+		case OBJECT_MODEL:
 			/* no support for event triggers on event triggers */
 			return false;
 		case OBJECT_ACCESS_METHOD:

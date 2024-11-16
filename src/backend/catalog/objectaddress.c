@@ -1163,6 +1163,9 @@ get_object_address(ObjectType objtype, Node *object,
 				address.objectId = get_statistics_object_oid(castNode(List, object),
 															 missing_ok);
 				address.objectSubId = 0;
+			case OBJECT_MODEL:
+				elog(ERROR, "unrecognized object type OBJECT_MODEL :%s:%d", __FILE__,__LINE__);
+
 				break;
 				/* no default, to let compiler warn about missing case */
 		}
@@ -2325,6 +2328,7 @@ pg_get_object_address(PG_FUNCTION_ARGS)
 		case OBJECT_TABCONSTRAINT:
 		case OBJECT_OPCLASS:
 		case OBJECT_OPFAMILY:
+		case OBJECT_MODEL:
 			objnode = (Node *) name;
 			break;
 		case OBJECT_ACCESS_METHOD:
@@ -2589,6 +2593,11 @@ check_object_ownership(Oid roleid, ObjectType objtype, ObjectAddress address,
 			/* These are currently not supported or don't make sense here. */
 			elog(ERROR, "unsupported object type: %d", (int) objtype);
 			break;
+		case OBJECT_MODEL:
+			/* These are currently not supported or don't make sense here. */
+			elog(ERROR, "unsupported object type OBJECT_MODEL %s:%d", __FILE__,__LINE__);
+			break;
+
 	}
 }
 

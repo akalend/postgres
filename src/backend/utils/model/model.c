@@ -2,6 +2,7 @@
 #include <errno.h>
 #include "postgres.h"
 #include "c.h"
+#include "c_api.h"
 #include "fmgr.h"
 #include "miscadmin.h"
 
@@ -39,6 +40,10 @@
 
 #define QUOTEMARK '"'
 
+static char * GetFeaturesInfo(ModelCalcerHandle *modelHandle, int *resultLen);
+
+static char * ArrayToStringList(char **featureName, int featureCount);
+static char * IntArrayToStringList(size_t *featureData, int featureCount);
 
 static Form_pg_class GetPredictTableFormByName(const char *tablename);
 static char * read_whole_file(const char *filename, int *length);
@@ -67,6 +72,137 @@ GetCreateModelResultDesc(void)
 	return tupdesc;
 }
 
+static char *
+GetFeaturesInfo(ModelCalcerHandle *modelHandle, int *resultLen)
+{
+	char *strbuf, *data;
+	size_t *indices;
+	size_t featureCount;
+	int i;
+	char** featureName ; 
+
+	StringInfo outInfoString = makeStringInfo();
+
+	MemoryContext resultcxt, oldcxt;
+	Oid PredictTableOid;
+
+	/* This is the context that we will allocate our output data in */
+	resultcxt =  AllocSetContextCreate(TopMemoryContext,
+											"FeatureInfoContext",
+											ALLOCSET_DEFAULT_SIZES);
+
+	oldcxt = MemoryContextSwitchTo(resultcxt);
+
+
+	featureName = palloc(sizeof(void*) * FIELDCOUNT);
+	if (! GetModelUsedFeaturesNames(modelHandle, &featureName, &featureCount))
+	{
+		elog(ERROR,"get model feature names error: %s", GetErrorString());
+	}
+
+	if (featureCount > FIELDCOUNT)
+		elog(ERROR, "count of field %ld is overflow.", featureCount);
+
+
+	strbuf = ArrayToStringList(featureName, featureCount);
+
+	appendStringInfo(outInfoString, "{ \"fieldList\":\"%s\",", strbuf);
+	
+	// pfree(strbuf);
+	// for(i=0; i < featureCount; i++)
+	// {
+	// 	pfree(featureName[i]);
+	// }
+	// pfree(featureName);
+
+
+
+	featureCount = GetCatFeaturesCount(modelHandle);
+	indices = palloc0(sizeof(size_t) * featureCount);
+
+	
+	if (!GetCatFeatureIndices(modelHandle, &indices, &featureCount))
+	{
+		elog(ERROR,"CatBoost error: %s", GetErrorString());
+	}
+
+
+	strbuf = IntArrayToStringList(indices, featureCount);
+	appendStringInfo(outInfoString, " \"CategoryFieldList\":\"%s\",", strbuf);
+	// pfree(strbuf);
+	// pfree(indices);
+
+
+
+	featureCount = GetFloatFeaturesCount(modelHandle);
+	indices = palloc0(sizeof(size_t) * featureCount);
+
+	if (!GetFloatFeatureIndices(modelHandle, &indices, &featureCount))
+	{
+		elog(ERROR,"CatBoost error: %s", GetErrorString());
+	}
+
+
+	strbuf = IntArrayToStringList(indices, featureCount);
+	appendStringInfo(outInfoString, " \"FloatFieldList\":\"%s\"}", strbuf);
+	// pfree(strbuf);
+	// pfree(indices);
+
+
+	data = outInfoString->data;
+
+	MemoryContextSwitchTo(oldcxt);
+	MemoryContextReset(resultcxt);
+	
+	// pfree(outInfoString);
+	*resultLen = outInfoString->len;
+	return data;
+}
+
+
+static char *
+ArrayToStringList(char **featureName, int featureCount)
+{
+	int i = 0;
+	char *p;
+	char * strbuf = palloc( NAMEDATALEN * featureCount);
+	
+	p = strbuf;
+
+	for(i = 0; i < featureCount; i++)
+	{
+		if (featureName[i] == NULL)
+			elog(ERROR, "feature #%d is null", i);
+
+		strcpy(p, featureName[i]);
+		p += strlen(featureName[i]);
+		*p = ',';
+		p++;
+	}
+	
+	*--p = '\0';
+	return strbuf;
+}
+
+
+static char *
+IntArrayToStringList(size_t *featureData, int featureCount)
+{
+	int i = 0;
+	char * data;
+	StringInfo buf = makeStringInfo();
+
+	for(i = 0; i < featureCount; i++)
+	{
+		appendStringInfo(buf, "%ld,", featureData[i]);
+	}
+
+	*(buf->data + buf->len -1) = '\0';
+	data = 	buf->data;
+	pfree(buf);
+	return data;
+}
+
 
 /**
  * @TODO тут нужно распарсить tablename, если в нем указано tablespace, то использовать tablespace
@@ -84,7 +220,7 @@ GetPredictTableFormByName(const char *tablename)
 	tup = SearchSysCache1(RELOID, ObjectIdGetDatum(PredictTableOid));
 
 	if (!HeapTupleIsValid(tup))
-	    elog(ERROR, "cache lookup failed for relation %d", PredictTableOid);
+		elog(ERROR, "cache lookup failed for relation %d", PredictTableOid);
 	form = (Form_pg_class) GETSTRUCT(tup);
 
 	ReleaseSysCache(tup);
@@ -354,7 +490,7 @@ CreateModelExecuteStmt(CreateModelStmt *stmt, DestReceiver *dest)
 	tupdesc = CreateTemplateTupleDesc(Natts_model);
 
 	TupleDescInitEntry(tupdesc, 1, "name", NAMEOID, -1, 0);
-	TupleDescInitEntry(tupdesc, 2, "file", TEXTOID, -1, 0);
+	TupleDescInitEntry(tupdesc, 2, "fieldlist", TEXTOID, -1, 0);
 	TupleDescInitEntry(tupdesc, 3, "model_type", BPCHAROID, -1, 0); // 1042
 	TupleDescInitEntry(tupdesc, 4, "acc", FLOAT4OID, -1, 0);
 	TupleDescInitEntry(tupdesc, 5, "info", TEXTOID, -1, 0);
@@ -388,21 +524,17 @@ CreateModelExecuteStmt(CreateModelStmt *stmt, DestReceiver *dest)
 		heap_deform_tuple(tup,  tupdesc, values, nulls);
 
 		if(should_free) heap_freetuple(tup);
-		elog(WARNING,"OK, FOUND should_free=%d", should_free);
 		found = true;
 	}
 
-	if (!found)
-	{
-		elog(WARNING,"record NOT FOUND");
-	}
-	else
+	if (found)
 	{
 		int file_length = 0;
 		bytea *result;
-		char *s;
-		elog(WARNING, "name:%s type=%s acc=%g [%s]", DatumGetCString(values[0]), 
-			DatumGetCString(values[2]), DatumGetFloat4(values[3]), buf.data);
+		text *infoOutDatum;
+		void *model_buffer;
+		ModelCalcerHandle *modelHandle;
+		int len;
 
 		nulls[3] = false;
 		values[3] = Float4GetDatum(out);
@@ -412,23 +544,50 @@ CreateModelExecuteStmt(CreateModelStmt *stmt, DestReceiver *dest)
 		values[5] = CStringGetTextDatum(buf.data);
 		doReplace[5]  = true;
 	
-		s = read_whole_file(tmp_name, &file_length);
+		model_buffer = read_whole_file(tmp_name, &file_length);
 		result = (text *) palloc(file_length + VARHDRSZ);
 
 		SET_VARSIZE(result, file_length + VARHDRSZ);
-		memcpy(VARDATA(result), s, file_length);
-		pfree(s);
+		memcpy(VARDATA(result), model_buffer, file_length);
 
-		elog(WARNING, "readfile %d bytes", file_length);		
 		nulls[6] = false;
 		values[6] = PointerGetDatum(result);
 		doReplace[6]  = true;
+
+
+		modelHandle = ModelCalcerCreate();
+		if (!LoadFullModelFromBuffer(modelHandle, model_buffer, file_length))
+		{
+			elog(ERROR, "LoadFullModelFromBuffer error message: %s\n", GetErrorString());
+		}
+
+
+		char *modelInfo = GetFeaturesInfo(modelHandle, &len);
+
+		infoOutDatum = (text *) palloc(len + VARHDRSZ);
+		SET_VARSIZE(infoOutDatum, len + VARHDRSZ);
+		memcpy(VARDATA(infoOutDatum), modelInfo, len);
+
+		nulls[1] = false;
+		values[1] = PointerGetDatum(infoOutDatum);
+		doReplace[1]  = true;
+
+
+		ModelCalcerDelete(modelHandle);
 
 		tup = heap_modify_tuple(tup, tupdesc,values, nulls, doReplace);
 		if (HeapTupleIsValid(tup))
 		{
 			CatalogTupleUpdate(rel, &tup->t_self, tup);
 		}
+
+		// pfree(featureName);
+		pfree(model_buffer);
+
+	}
+	else
+	{
+		elog(ERROR,"Model NOT FOUND");
 	}
 
 	index_endscan(scan);
@@ -524,7 +683,6 @@ read_whole_file(const char *filename, int *length)
 				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
 				 errmsg("file \"%s\" is too large", filename)));
 	bytes_to_read = (size_t) fst.st_size;
-	elog(WARNING, "bytes_to_read %d", bytes_to_read);
 
 
 	if ((file = AllocateFile(filename, PG_BINARY_R)) == NULL)

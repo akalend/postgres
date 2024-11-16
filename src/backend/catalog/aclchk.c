@@ -2801,6 +2801,7 @@ aclcheck_error(AclResult aclerr, ObjectType objtype,
 					case OBJECT_TSPARSER:
 					case OBJECT_TSTEMPLATE:
 					case OBJECT_USER_MAPPING:
+					case OBJECT_MODEL:
 						elog(ERROR, "unsupported object type: %d", objtype);
 				}
 

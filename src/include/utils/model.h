@@ -8,6 +8,9 @@ TupleDesc GetCreateModelResultDesc(void);
 Oid GetProcOidByName(const char* proname);
 TupleDesc GetPredictModelResultDesc(PredictModelStmt *node);
 
+
+#define FIELDCOUNT 256
+
 typedef struct FormData_model
 {
     NameData name;
