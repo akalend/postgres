@@ -41,6 +41,7 @@
 #define QUOTEMARK '"'
 
 static TupleDesc GetMlModelTableDesc(void);
+static bool FindByNameFromMlModel(IndexScanDesc *scan);
 
 static char * GetFeaturesInfo(ModelCalcerHandle *modelHandle, int *resultLen);
 static char* CreateJsonModelParameters(CreateModelStmt *stmt);
@@ -75,6 +76,35 @@ GetCreateModelResultDesc(void)
 	TupleDescInitEntry(tupdesc, (AttrNumber) 1, "accuracy",
 					   TEXTOID, -1, 0);
 	return tupdesc;
+}
+
+/*
+ * Found by model name in ml_model
+ */
+static bool
+FindByNameFromMlModel(IndexScanDesc *scan)
+{
+	*scan = index_beginscan(rel, idxrel, GetTransactionSnapshot(), 1 /* nkeys */, 0 /* norderbys */);
+
+	ScanKeyInit(&skey[0],
+				Anum_ml_name ,
+				BTGreaterEqualStrategyNumber, F_NAMEEQ,
+				NameGetDatum(&name_name));
+
+	index_rescan(scan, skey, 1, NULL /* orderbys */, 0 /* norderbys */);
+
+	slot = table_slot_create(rel, NULL);
+	while (index_getnext_slot(scan, ForwardScanDirection, slot))
+	{
+		bool should_free;
+		tup = ExecFetchSlotHeapTuple(slot, false, &should_free);
+		
+		heap_deform_tuple(tup,  tupdesc, values, nulls);
+
+		if(should_free) heap_freetuple(tup);
+		return true;
+	}
+	return false
 }
 
 
@@ -554,7 +584,6 @@ CreateModelExecuteStmt(CreateModelStmt *stmt, DestReceiver *dest)
 	tstate = begin_tup_output_tupdesc(dest, tupdesc, &TTSOpsVirtual);
 
 
-
 	/* save metadata  */
 
 	if (MetadataTableOid == InvalidOid)
@@ -570,31 +599,12 @@ CreateModelExecuteStmt(CreateModelStmt *stmt, DestReceiver *dest)
 	nulls = (bool *) palloc0(sizeof(bool) * Natts_model);
 	doReplace = (bool *) palloc0(sizeof(bool) * Natts_model);
 
+
+
 	rel = table_open(MetadataTableOid, RowExclusiveLock);
 	idxrel = index_open(MetadataTableIdxOid, AccessShareLock);
 
-	scan = index_beginscan(rel, idxrel, GetTransactionSnapshot(), 1 /* nkeys */, 0 /* norderbys */);
-
-	ScanKeyInit(&skey[0],
-				Anum_ml_name ,
-				BTGreaterEqualStrategyNumber, F_NAMEEQ,
-				NameGetDatum(&name_name));
-
-	index_rescan(scan, skey, 1, NULL /* orderbys */, 0 /* norderbys */);
-
-	slot = table_slot_create(rel, NULL);
-	while (index_getnext_slot(scan, ForwardScanDirection, slot))
-	{
-		bool should_free;
-		tup = ExecFetchSlotHeapTuple(slot, false, &should_free);
-		
-		heap_deform_tuple(tup,  tupdesc, values, nulls);
-
-		if(should_free) heap_freetuple(tup);
-		found = true;
-	}
-
-
+	found = FindByNameFromMlModel(*scan);
 
 	nulls[3] = false;
 	values[3] = Float4GetDatum(out);
