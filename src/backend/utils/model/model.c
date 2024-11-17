@@ -40,7 +40,12 @@
 
 #define QUOTEMARK '"'
 
+static TupleDesc GetMlModelTableDesc(void);
+
 static char * GetFeaturesInfo(ModelCalcerHandle *modelHandle, int *resultLen);
+static char* CreateJsonModelParameters(CreateModelStmt *stmt);
+static Datum LoadFileToBuffer(const char * tmp_name,  int file_length,void **model_buffer);
+static Datum GetFeaturesFieldInfo(void* model_buffer, int file_length);
 
 static char * ArrayToStringList(char **featureName, int featureCount);
 static char * IntArrayToStringList(size_t *featureData, int featureCount);
@@ -72,19 +77,125 @@ GetCreateModelResultDesc(void)
 	return tupdesc;
 }
 
+
+/*
+ * Get a tuple descriptor for ml+nodel table
+ */
+static TupleDesc
+GetMlModelTableDesc(void)
+{
+
+	TupleDesc   tupdesc = CreateTemplateTupleDesc(Natts_model);
+
+	TupleDescInitEntry(tupdesc, 1, "name", NAMEOID, -1, 0);
+	TupleDescInitEntry(tupdesc, 2, "fieldlist", TEXTOID, -1, 0);
+	TupleDescInitEntry(tupdesc, 3, "model_type", BPCHAROID, -1, 0); // 1042
+	TupleDescInitEntry(tupdesc, 4, "acc", FLOAT4OID, -1, 0);
+	TupleDescInitEntry(tupdesc, 5, "info", TEXTOID, -1, 0);
+	TupleDescInitEntry(tupdesc, 6, "args", TEXTOID, -1, 0);
+	TupleDescInitEntry(tupdesc, 7, "data", BYTEAOID, -1, 0);
+	return tupdesc;
+}
+
+/* create in model options parameter*/
+static char*
+CreateJsonModelParameters(CreateModelStmt *stmt)
+{
+	int len;
+	StringInfoData  buf;
+	ListCell  *lc;
+	initStringInfo(&buf);
+	appendStringInfoChar(&buf, '{');
+
+	foreach(lc, stmt->options)
+	{
+		ModelOptElement *opt;
+		opt = (ModelOptElement *) lfirst(lc);
+				
+		if (opt->parm == MODEL_PARAMETER_TARGET)
+		{
+			appendStringInfo(&buf, "\"target\":\"%s\"", (char*)opt->value);
+		}
+		else
+		{
+			if (opt->value){
+				appendStringInfo(&buf, "\"ignored\":[\"%s\"]",opt->value);
+			}
+			else
+			{
+				ListCell  *lc2;
+				StrModelElement *el;
+				appendStringInfo(&buf, "\"ignored\":[");
+				foreach( lc2, opt->elements)
+				{
+					el = (StrModelElement *) lfirst(lc2);
+					appendStringInfo(&buf,"\"%s\",", el->value);
+				}
+				len = buf.len;
+				*(buf.data + len - 1) = ']';
+			}
+		}
+		appendStringInfo(&buf, ",");
+	}
+
+	len = buf.len;
+	*(buf.data + len - 1) = '}';
+	return buf.data;
+}
+
+
+static Datum
+LoadFileToBuffer(const char * tmp_name,  int file_length, void **model_buffer)
+{
+	bytea *result;
+	int len;
+	result = (text *) palloc(file_length + VARHDRSZ);
+	*model_buffer = read_whole_file(tmp_name, &len);
+
+	elog(WARNING, "len=%d/%d", file_length,len);
+
+	SET_VARSIZE(result, file_length + VARHDRSZ);
+	memcpy(VARDATA(result), *model_buffer, file_length);
+	
+	return PointerGetDatum(result);
+}
+
+
+static Datum 
+GetFeaturesFieldInfo(void* model_buffer, int file_length)
+{
+	char *modelInfo;
+	int len;
+	text *infoOutDatum;
+	ModelCalcerHandle *modelHandle = ModelCalcerCreate();
+	if (!LoadFullModelFromBuffer(modelHandle, model_buffer, file_length))
+	{
+		elog(ERROR, "LoadFullModelFromBuffer error message: %s\n", GetErrorString());
+	}
+
+
+	modelInfo = GetFeaturesInfo(modelHandle, &len);
+
+	infoOutDatum = (text *) palloc(len + VARHDRSZ);
+	SET_VARSIZE(infoOutDatum, len + VARHDRSZ);
+	memcpy(VARDATA(infoOutDatum), modelInfo, len);
+
+	ModelCalcerDelete(modelHandle);
+	return PointerGetDatum(infoOutDatum);
+}
+
+
 static char *
 GetFeaturesInfo(ModelCalcerHandle *modelHandle, int *resultLen)
 {
 	char *strbuf, *data;
 	size_t *indices;
 	size_t featureCount;
-	int i;
 	char** featureName ; 
 
 	StringInfo outInfoString = makeStringInfo();
 
 	MemoryContext resultcxt, oldcxt;
-	Oid PredictTableOid;
 
 	/* This is the context that we will allocate our output data in */
 	resultcxt =  AllocSetContextCreate(TopMemoryContext,
@@ -114,7 +225,6 @@ GetFeaturesInfo(ModelCalcerHandle *modelHandle, int *resultLen)
 	// 	pfree(featureName[i]);
 	// }
 	// pfree(featureName);
-
 
 
 	featureCount = GetCatFeaturesCount(modelHandle);
@@ -390,9 +500,6 @@ CreateModelExecuteStmt(CreateModelStmt *stmt, DestReceiver *dest)
 	TupOutputState *tstate;
 	TupleDesc   tupdesc;
 	HeapTuple tup;
-	int len;
-	ListCell  *lc;
-	StringInfoData  buf;
 	Datum res;
 	float4 out;
 	char *res_out;
@@ -407,44 +514,16 @@ CreateModelExecuteStmt(CreateModelStmt *stmt, DestReceiver *dest)
 	struct stat st;
 	int rc;
 	const char* tmp_name = tempnam("/tmp/", "cbm_");
+	int file_length;
+	void* model_buffer;
+	int len;
+	char * str_parameter;
+
 
 	namestrcpy(&name_name, stmt->modelname);
-	initStringInfo(&buf);
-	appendStringInfoChar(&buf, '{');
 
-	foreach(lc, stmt->options)
-	{
-		ModelOptElement *opt;
-		opt = (ModelOptElement *) lfirst(lc);
-				
-		if (opt->parm == MODEL_PARAMETER_TARGET)
-		{
-			appendStringInfo(&buf, "\"target\":\"%s\"", (char*)opt->value);
-		}
-		else
-		{
-			if (opt->value){
-				appendStringInfo(&buf, "\"ignored\":[\"%s\"]",opt->value);
-			}
-			else
-			{
-				ListCell  *lc2;
-				StrModelElement *el;
-				appendStringInfo(&buf, "\"ignored\":[");
-				foreach( lc2, opt->elements)
-				{
-					el = (StrModelElement *) lfirst(lc2);
-					appendStringInfo(&buf,"\"%s\",", el->value);
-				}
-				len = buf.len;
-				*(buf.data + len - 1) = ']';
-			}
-		}
-		appendStringInfo(&buf, ",");
-	}
+	str_parameter = CreateJsonModelParameters(stmt);
 
-	len = buf.len;
-	*(buf.data + len - 1) = '}';
 
 	if (mlJsonWrapperOid == InvalidOid)
 	{
@@ -453,7 +532,7 @@ CreateModelExecuteStmt(CreateModelStmt *stmt, DestReceiver *dest)
 	res = OidFunctionCall5(  mlJsonWrapperOid, 
 					CStringGetTextDatum(stmt->modelname),
 					DatumGetInt32(stmt->modelclass),
-					CStringGetTextDatum(buf.data),
+					CStringGetTextDatum(str_parameter),
 					CStringGetTextDatum(stmt->tablename),
 					CStringGetTextDatum(tmp_name));
 
@@ -465,17 +544,15 @@ CreateModelExecuteStmt(CreateModelStmt *stmt, DestReceiver *dest)
 		elog(ERROR, "Temporaly model file \"%s\" not found\n%s", tmp_name, errmsg);
 	}
 
+	file_length = st.st_size;
 
 	/* need a tuple descriptor representing a single TEXT column */
-	tupdesc = CreateTemplateTupleDesc(1);
-	TupleDescInitBuiltinEntry(tupdesc, (AttrNumber) 1, "accuracy",
-							  TEXTOID, -1, 0);
+	tupdesc = GetCreateModelResultDesc();
+
 
 	/* prepare for projection of tuples */
 	tstate = begin_tup_output_tupdesc(dest, tupdesc, &TTSOpsVirtual);
 
-	out = DatumGetFloat8(res);
-	res_out = psprintf("%g", out);
 
 
 	/* save metadata  */
@@ -487,24 +564,14 @@ CreateModelExecuteStmt(CreateModelStmt *stmt, DestReceiver *dest)
 	}
 
 
-	tupdesc = CreateTemplateTupleDesc(Natts_model);
-
-	TupleDescInitEntry(tupdesc, 1, "name", NAMEOID, -1, 0);
-	TupleDescInitEntry(tupdesc, 2, "fieldlist", TEXTOID, -1, 0);
-	TupleDescInitEntry(tupdesc, 3, "model_type", BPCHAROID, -1, 0); // 1042
-	TupleDescInitEntry(tupdesc, 4, "acc", FLOAT4OID, -1, 0);
-	TupleDescInitEntry(tupdesc, 5, "info", TEXTOID, -1, 0);
-	TupleDescInitEntry(tupdesc, 6, "args", TEXTOID, -1, 0);
-	TupleDescInitEntry(tupdesc, 7, "data", BYTEAOID, -1, 0);
-
-
-
-	rel = table_open(MetadataTableOid, RowExclusiveLock);
-	idxrel = index_open(MetadataTableIdxOid, AccessShareLock);
+	tupdesc = GetMlModelTableDesc();
 
 	values = (Datum*)palloc0( sizeof(Datum) * Natts_model);
 	nulls = (bool *) palloc0(sizeof(bool) * Natts_model);
 	doReplace = (bool *) palloc0(sizeof(bool) * Natts_model);
+
+	rel = table_open(MetadataTableOid, RowExclusiveLock);
+	idxrel = index_open(MetadataTableIdxOid, AccessShareLock);
 
 	scan = index_beginscan(rel, idxrel, GetTransactionSnapshot(), 1 /* nkeys */, 0 /* norderbys */);
 
@@ -527,53 +594,29 @@ CreateModelExecuteStmt(CreateModelStmt *stmt, DestReceiver *dest)
 		found = true;
 	}
 
+
+
+	nulls[3] = false;
+	values[3] = Float4GetDatum(out);
+	doReplace[3]  = true;
+
+	nulls[5] = false;
+	values[5] = CStringGetTextDatum(str_parameter);
+	doReplace[5]  = true;
+
+
+	nulls[6] = false;
+	values[6] = LoadFileToBuffer(tmp_name, file_length, &model_buffer);
+	doReplace[6]  = true;
+
+	nulls[1] = false;
+	values[1] = GetFeaturesFieldInfo(model_buffer, file_length);
+	doReplace[1]  = true;
+
+
 	if (found)
 	{
-		int file_length = 0;
-		bytea *result;
-		text *infoOutDatum;
-		void *model_buffer;
-		ModelCalcerHandle *modelHandle;
-		int len;
 
-		nulls[3] = false;
-		values[3] = Float4GetDatum(out);
-		doReplace[3]  = true;
-
-		nulls[5] = false;
-		values[5] = CStringGetTextDatum(buf.data);
-		doReplace[5]  = true;
-	
-		model_buffer = read_whole_file(tmp_name, &file_length);
-		result = (text *) palloc(file_length + VARHDRSZ);
-
-		SET_VARSIZE(result, file_length + VARHDRSZ);
-		memcpy(VARDATA(result), model_buffer, file_length);
-
-		nulls[6] = false;
-		values[6] = PointerGetDatum(result);
-		doReplace[6]  = true;
-
-
-		modelHandle = ModelCalcerCreate();
-		if (!LoadFullModelFromBuffer(modelHandle, model_buffer, file_length))
-		{
-			elog(ERROR, "LoadFullModelFromBuffer error message: %s\n", GetErrorString());
-		}
-
-
-		char *modelInfo = GetFeaturesInfo(modelHandle, &len);
-
-		infoOutDatum = (text *) palloc(len + VARHDRSZ);
-		SET_VARSIZE(infoOutDatum, len + VARHDRSZ);
-		memcpy(VARDATA(infoOutDatum), modelInfo, len);
-
-		nulls[1] = false;
-		values[1] = PointerGetDatum(infoOutDatum);
-		doReplace[1]  = true;
-
-
-		ModelCalcerDelete(modelHandle);
 
 		tup = heap_modify_tuple(tup, tupdesc,values, nulls, doReplace);
 		if (HeapTupleIsValid(tup))
@@ -582,13 +625,14 @@ CreateModelExecuteStmt(CreateModelStmt *stmt, DestReceiver *dest)
 		}
 
 		// pfree(featureName);
-		pfree(model_buffer);
+		// pfree(&model_buffer);
 
 	}
-	else
-	{
-		elog(ERROR,"Model NOT FOUND");
-	}
+	// else
+	// {
+	// 	// newtuple = heap_form_tuple(RelationGetDescr(rel), values, nulls);
+	// 	// CatalogTupleInsert(rel, newtuple);
+	// }
 
 	index_endscan(scan);
 	index_close(idxrel, AccessShareLock);
@@ -598,6 +642,7 @@ CreateModelExecuteStmt(CreateModelStmt *stmt, DestReceiver *dest)
 
 
 	/* Send it */
+	res_out = psprintf("%g", DatumGetFloat8(res));
 	do_text_output_oneline(tstate, res_out);
 
 	end_tup_output(tstate);
