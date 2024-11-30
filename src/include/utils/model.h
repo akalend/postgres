@@ -28,7 +28,7 @@ typedef FormData_model* Form_model;
 typedef enum Anum_model
 {
 	Anum_ml_name = 1,
-	Anum_ml_model_file,
+	Anum_ml_model_fieldlist,
 	Anum_ml_model_type,
 	Anum_ml_model_acc,
 	Anum_ml_model_info,

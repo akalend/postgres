@@ -41,7 +41,6 @@
 #define QUOTEMARK '"'
 
 static TupleDesc GetMlModelTableDesc(void);
-static bool FindByNameFromMlModel(IndexScanDesc *scan);
 
 static char * GetFeaturesInfo(ModelCalcerHandle *modelHandle, int *resultLen);
 static char* CreateJsonModelParameters(CreateModelStmt *stmt);
@@ -76,35 +75,6 @@ GetCreateModelResultDesc(void)
 	TupleDescInitEntry(tupdesc, (AttrNumber) 1, "accuracy",
 					   TEXTOID, -1, 0);
 	return tupdesc;
-}
-
-/*
- * Found by model name in ml_model
- */
-static bool
-FindByNameFromMlModel(IndexScanDesc *scan)
-{
-	*scan = index_beginscan(rel, idxrel, GetTransactionSnapshot(), 1 /* nkeys */, 0 /* norderbys */);
-
-	ScanKeyInit(&skey[0],
-				Anum_ml_name ,
-				BTGreaterEqualStrategyNumber, F_NAMEEQ,
-				NameGetDatum(&name_name));
-
-	index_rescan(scan, skey, 1, NULL /* orderbys */, 0 /* norderbys */);
-
-	slot = table_slot_create(rel, NULL);
-	while (index_getnext_slot(scan, ForwardScanDirection, slot))
-	{
-		bool should_free;
-		tup = ExecFetchSlotHeapTuple(slot, false, &should_free);
-		
-		heap_deform_tuple(tup,  tupdesc, values, nulls);
-
-		if(should_free) heap_freetuple(tup);
-		return true;
-	}
-	return false
 }
 
 
@@ -529,9 +499,8 @@ CreateModelExecuteStmt(CreateModelStmt *stmt, DestReceiver *dest)
 {
 	TupOutputState *tstate;
 	TupleDesc   tupdesc;
-	HeapTuple tup;
+	HeapTuple tup = NULL;
 	Datum res;
-	float4 out;
 	char *res_out;
 	Relation rel, idxrel;
 	IndexScanDesc scan;
@@ -546,7 +515,6 @@ CreateModelExecuteStmt(CreateModelStmt *stmt, DestReceiver *dest)
 	const char* tmp_name = tempnam("/tmp/", "cbm_");
 	int file_length;
 	void* model_buffer;
-	int len;
 	char * str_parameter;
 
 
@@ -600,55 +568,82 @@ CreateModelExecuteStmt(CreateModelStmt *stmt, DestReceiver *dest)
 	doReplace = (bool *) palloc0(sizeof(bool) * Natts_model);
 
 
-
+	/* Found by model name in ml_model */
+ 
 	rel = table_open(MetadataTableOid, RowExclusiveLock);
 	idxrel = index_open(MetadataTableIdxOid, AccessShareLock);
 
-	found = FindByNameFromMlModel(*scan);
+	scan = index_beginscan(rel, idxrel, GetTransactionSnapshot(), 1 /* nkeys */, 0 /* norderbys */);
 
-	nulls[3] = false;
-	values[3] = Float4GetDatum(out);
-	doReplace[3]  = true;
+	ScanKeyInit(&skey[0],
+				Anum_ml_name ,
+				BTGreaterEqualStrategyNumber, F_NAMEEQ,
+				NameGetDatum(&name_name));
 
-	nulls[5] = false;
-	values[5] = CStringGetTextDatum(str_parameter);
-	doReplace[5]  = true;
+	index_rescan(scan, skey, 1, NULL /* orderbys */, 0 /* norderbys */);
+
+	slot = table_slot_create(rel, NULL);
+	found = false;
+	while (index_getnext_slot(scan, ForwardScanDirection, slot))
+	{
+		bool should_free;
+		tup = ExecFetchSlotHeapTuple(slot, false, &should_free);
+		
+		heap_deform_tuple(tup,  tupdesc, values, nulls);
+
+		if(should_free) heap_freetuple(tup);
+		found = true;
+	}
+
+	nulls[Anum_ml_model_acc-1] = false;
+	values[Anum_ml_model_acc-1] = Float4GetDatum(DatumGetFloat8(res));
+	doReplace[Anum_ml_model_acc-1]  = true;
+
+	nulls[Anum_ml_model_args-1] = false;
+	values[Anum_ml_model_args-1] = CStringGetTextDatum(str_parameter);
+	doReplace[Anum_ml_model_args-1]  = true;
 
 
-	nulls[6] = false;
-	values[6] = LoadFileToBuffer(tmp_name, file_length, &model_buffer);
-	doReplace[6]  = true;
+	nulls[Anum_ml_model_data-1] = false;
+	values[Anum_ml_model_data-1] = LoadFileToBuffer(tmp_name, file_length, &model_buffer);
+	doReplace[Anum_ml_model_data-1]  = true;
 
-	nulls[1] = false;
-	values[1] = GetFeaturesFieldInfo(model_buffer, file_length);
-	doReplace[1]  = true;
+	nulls[Anum_ml_model_fieldlist-1] = false;
+	values[Anum_ml_model_fieldlist-1] = GetFeaturesFieldInfo(model_buffer, file_length);
+	doReplace[Anum_ml_model_fieldlist-1]  = true;
 
 
 	if (found)
 	{
-
-
 		tup = heap_modify_tuple(tup, tupdesc,values, nulls, doReplace);
-		if (HeapTupleIsValid(tup))
-		{
-			CatalogTupleUpdate(rel, &tup->t_self, tup);
-		}
-
-		// pfree(featureName);
-		// pfree(&model_buffer);
-
+		CatalogTupleUpdate(rel, &tup->t_self, tup);
 	}
-	// else
-	// {
-	// 	// newtuple = heap_form_tuple(RelationGetDescr(rel), values, nulls);
-	// 	// CatalogTupleInsert(rel, newtuple);
-	// }
+	
 
 	index_endscan(scan);
 	index_close(idxrel, AccessShareLock);
 	table_close(rel, RowExclusiveLock);
 
 	ExecDropSingleTupleTableSlot(slot);
+
+	if (!found)
+	{
+		rel = table_open(MetadataTableOid, RowExclusiveLock);
+		nulls[Anum_ml_name-1] = false;
+		values[Anum_ml_name-1] = CStringGetTextDatum(stmt->modelname);
+
+		
+		tup = heap_form_tuple(tupdesc, values, nulls);
+
+		CatalogTupleInsert(rel, tup);
+		heap_freetuple(tup);
+		table_close(rel, RowExclusiveLock);
+		
+		ExecDropSingleTupleTableSlot(slot);
+	}
+	
+
+
 
 
 	/* Send it */
