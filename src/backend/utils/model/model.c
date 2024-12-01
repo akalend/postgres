@@ -564,9 +564,10 @@ CreateModelExecuteStmt(CreateModelStmt *stmt, DestReceiver *dest)
 	tupdesc = GetMlModelTableDesc();
 
 	values = (Datum*)palloc0( sizeof(Datum) * Natts_model);
-	nulls = (bool *) palloc0(sizeof(bool) * Natts_model);
+	nulls = (bool *) palloc(sizeof(bool) * Natts_model);
 	doReplace = (bool *) palloc0(sizeof(bool) * Natts_model);
 
+	memset(nulls, true, sizeof(nulls));
 
 	/* Found by model name in ml_model */
  
@@ -639,7 +640,6 @@ CreateModelExecuteStmt(CreateModelStmt *stmt, DestReceiver *dest)
 		heap_freetuple(tup);
 		table_close(rel, RowExclusiveLock);
 		
-		ExecDropSingleTupleTableSlot(slot);
 	}
 	
 
