@@ -152,8 +152,6 @@ LoadFileToBuffer(const char * tmp_name,  int file_length, void **model_buffer)
 	result = (text *) palloc(file_length + VARHDRSZ);
 	*model_buffer = read_whole_file(tmp_name, &len);
 
-	elog(WARNING, "len=%d/%d", file_length,len);
-
 	SET_VARSIZE(result, file_length + VARHDRSZ);
 	memcpy(VARDATA(result), *model_buffer, file_length);
 	
@@ -219,14 +217,7 @@ GetFeaturesInfo(ModelCalcerHandle *modelHandle, int *resultLen)
 
 	appendStringInfo(outInfoString, "{ \"fieldList\":\"%s\",", strbuf);
 	
-	// pfree(strbuf);
-	// for(i=0; i < featureCount; i++)
-	// {
-	// 	pfree(featureName[i]);
-	// }
-	// pfree(featureName);
-
-
+	
 	featureCount = GetCatFeaturesCount(modelHandle);
 	indices = palloc0(sizeof(size_t) * featureCount);
 
@@ -631,7 +622,7 @@ CreateModelExecuteStmt(CreateModelStmt *stmt, DestReceiver *dest)
 	{
 		rel = table_open(MetadataTableOid, RowExclusiveLock);
 		nulls[Anum_ml_name-1] = false;
-		values[Anum_ml_name-1] = CStringGetTextDatum(stmt->modelname);
+		values[Anum_ml_name-1] = CStringGetDatum(stmt->modelname);
 
 		
 		tup = heap_form_tuple(tupdesc, values, nulls);
@@ -642,9 +633,6 @@ CreateModelExecuteStmt(CreateModelStmt *stmt, DestReceiver *dest)
 		
 	}
 	
-
-
-
 
 	/* Send it */
 	res_out = psprintf("%g", DatumGetFloat8(res));
