@@ -2,7 +2,6 @@
 #include <errno.h>
 #include "postgres.h"
 #include "c.h"
-#include "c_api.h"
 #include "fmgr.h"
 #include "miscadmin.h"
 
@@ -28,6 +27,7 @@
 #include "executor/executor.h"
 #include "executor/tuptable.h"
 #include "nodes/parsenodes.h"
+#include "utils/c_api.h"
 #include "tcop/dest.h"
 #include "utils/builtins.h"
 #include "utils/model.h"
@@ -41,7 +41,7 @@
 #define QUOTEMARK '"'
 
 static TupleDesc GetMlModelTableDesc(void);
-
+static ModelCalcerHandle* GetMlModelByName(const char * name);
 static char * GetFeaturesInfo(ModelCalcerHandle *modelHandle, int *resultLen);
 static char* CreateJsonModelParameters(CreateModelStmt *stmt);
 static Datum LoadFileToBuffer(const char * tmp_name,  int file_length,void **model_buffer);
@@ -402,10 +402,34 @@ PredictModelExecuteStmt(CreateModelStmt *stmt, DestReceiver *dest)
 	Form_pg_class form;
 	MemoryContext resultcxt, oldcxt;
 	Oid PredictTableOid;
+	ModelCalcerHandle *modelHandle;
+	size_t  cat_count, float_count, i;
+  	int32 *  arrFloat;
+  	int32 *  arrCat;
 
 	/* This is the context that we will allocate our output data in */
 	resultcxt = CurrentMemoryContext;
 	oldcxt = MemoryContextSwitchTo(resultcxt);
+
+	modelHandle = GetMlModelByName((const char*)stmt->modelname);
+
+  	cat_count = GetCatFeaturesCount(modelHandle);
+  	float_count = GetFloatFeaturesCount(modelHandle);
+
+  	arrFloat =  palloc( sizeof(int32) * float_count);
+  	arrCat =  palloc( sizeof(int32) * cat_count);
+
+  	for (i=0;i < float_count; i++)
+  	{
+  		elog(WARNING, "float[%d]=%d",i, arrFloat[i]);
+  	}
+
+
+  	GetFloatFeatureIndices(modelHandle, &arrFloat , float_count);
+	GetCatFeatureIndices(modelHandle, &cat_count, cat_count);
+
+
+
 
 	form = GetPredictTableFormByName((const char*)stmt->tablename);
 	tupdesc = CreateTemplateTupleDesc(form->relnatts + 1);
@@ -544,7 +568,6 @@ CreateModelExecuteStmt(CreateModelStmt *stmt, DestReceiver *dest)
 
 
 	/* save metadata  */
-
 	if (MetadataTableOid == InvalidOid)
 	{
 			MetadataTableOid  = get_relname_relid(ML_MODEL_METADATA, PG_PUBLIC_NAMESPACE);
@@ -558,7 +581,7 @@ CreateModelExecuteStmt(CreateModelStmt *stmt, DestReceiver *dest)
 	nulls = (bool *) palloc(sizeof(bool) * Natts_model);
 	doReplace = (bool *) palloc0(sizeof(bool) * Natts_model);
 
-	memset(nulls, true, sizeof(nulls));
+	memset(nulls, true, (sizeof(nulls)));
 
 	/* Found by model name in ml_model */
  
@@ -614,25 +637,20 @@ CreateModelExecuteStmt(CreateModelStmt *stmt, DestReceiver *dest)
 
 	index_endscan(scan);
 	index_close(idxrel, AccessShareLock);
-	table_close(rel, RowExclusiveLock);
-
 	ExecDropSingleTupleTableSlot(slot);
 
 	if (!found)
 	{
-		rel = table_open(MetadataTableOid, RowExclusiveLock);
 		nulls[Anum_ml_name-1] = false;
 		values[Anum_ml_name-1] = CStringGetDatum(stmt->modelname);
-
 		
 		tup = heap_form_tuple(tupdesc, values, nulls);
 
 		CatalogTupleInsert(rel, tup);
 		heap_freetuple(tup);
-		table_close(rel, RowExclusiveLock);
-		
 	}
 	
+	table_close(rel, RowExclusiveLock);
 
 	/* Send it */
 	res_out = psprintf("%g", DatumGetFloat8(res));
@@ -701,6 +719,83 @@ GetProcOidByName(const char* proname)
 		elog(ERROR, "procedure %s not found", proname);
 
 	return found_oid;
+}
+
+static ModelCalcerHandle*
+GetMlModelByName(const char * name)
+{
+	Relation rel, idxrel;;
+	ScanKeyData skey[1];
+	IndexScanDesc scan;
+	NameData name_data;
+	TupleTableSlot* slot;
+	Datum  *values;
+	bool   *nulls;
+	TupleDesc tupdesc;
+
+	bool found = false;
+	namestrcpy(&name_data, name);
+	
+	
+	if (MetadataTableOid == InvalidOid)
+	{
+			MetadataTableOid  = get_relname_relid(ML_MODEL_METADATA, PG_PUBLIC_NAMESPACE);
+			MetadataTableIdxOid = get_relname_relid(ML_MODEL_METADATA_IDX, PG_PUBLIC_NAMESPACE);
+	}
+
+	values = (Datum*)palloc0( sizeof(Datum) * Natts_model);
+	nulls = (bool *) palloc0(sizeof(bool) * Natts_model);
+	tupdesc = GetMlModelTableDesc();
+
+	rel = table_open(MetadataTableOid, RowExclusiveLock);
+	idxrel = index_open(MetadataTableIdxOid, AccessShareLock);
+
+	scan = index_beginscan(rel, idxrel, GetTransactionSnapshot(), 1 /* nkeys */, 0 /* norderbys */);
+
+	ScanKeyInit(&skey[0],
+				Anum_ml_name ,
+				BTGreaterEqualStrategyNumber, F_NAMEEQ,
+				NameGetDatum(&name_data));
+
+	index_rescan(scan, skey, 1, NULL /* orderbys */, 0 /* norderbys */);
+
+	slot = table_slot_create(rel, NULL);
+	while (index_getnext_slot(scan, ForwardScanDirection, slot))
+	{
+		HeapTuple tup;
+		bool should_free;
+	
+		tup = ExecFetchSlotHeapTuple(slot, false, &should_free);
+		
+		heap_deform_tuple(tup,  tupdesc, values, nulls);
+		if(should_free) heap_freetuple(tup);
+		found = true;
+	}
+
+	index_endscan(scan);
+	index_close(idxrel, AccessShareLock);
+	table_close(rel, RowExclusiveLock);
+
+	ExecDropSingleTupleTableSlot(slot);
+
+	if (found)
+	{
+		ModelCalcerHandle *modelHandle = ModelCalcerCreate();
+		bytea	   *bstr = DatumGetByteaPP(values[6]);
+		int len = VARSIZE(bstr);
+		const char* bufferData = VARDATA(bstr);
+		
+		elog(WARNING, "name:%s datalen=%d acc=%g", DatumGetCString(values[0]), len, DatumGetFloat4(values[3]));
+		if (!LoadFullModelFromBuffer(modelHandle, bufferData, len))
+		{
+			elog(ERROR, "LoadFullModelFromBuffer error message: %s\n", GetErrorString());
+		}
+		
+		return modelHandle;
+	}
+
+	elog(ERROR, "name:%s not found", name);
+
 }
 
 static char *
