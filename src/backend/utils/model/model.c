@@ -403,9 +403,12 @@ PredictModelExecuteStmt(CreateModelStmt *stmt, DestReceiver *dest)
 	MemoryContext resultcxt, oldcxt;
 	Oid PredictTableOid;
 	ModelCalcerHandle *modelHandle;
-	size_t  cat_count, float_count, i;
-  	int32 *  arrFloat;
-  	int32 *  arrCat;
+	size_t  cat_count2,cat_count, float_count;
+	int32  i,j, table_natts, featureCount;
+	size_t *  arrFloat;
+	size_t *  arrCat;
+	int *  arrTypes;
+	char **featureNames;
 
 	/* This is the context that we will allocate our output data in */
 	resultcxt = CurrentMemoryContext;
@@ -413,36 +416,42 @@ PredictModelExecuteStmt(CreateModelStmt *stmt, DestReceiver *dest)
 
 	modelHandle = GetMlModelByName((const char*)stmt->modelname);
 
-  	cat_count = GetCatFeaturesCount(modelHandle);
-  	float_count = GetFloatFeaturesCount(modelHandle);
-
-  	arrFloat =  palloc( sizeof(int32) * float_count);
-  	arrCat =  palloc( sizeof(int32) * cat_count);
-
-  	for (i=0;i < float_count; i++)
-  	{
-  		elog(WARNING, "float[%d]=%d",i, arrFloat[i]);
-  	}
+	cat_count = GetCatFeaturesCount(modelHandle);
+	float_count = GetFloatFeaturesCount(modelHandle);
 
 
-  	GetFloatFeatureIndices(modelHandle, &arrFloat , float_count);
-	GetCatFeatureIndices(modelHandle, &cat_count, cat_count);
+	if (!GetFloatFeatureIndices(modelHandle, &arrFloat , &float_count))
+	{
+		elog(ERROR,"get model float feature indexes: %s", GetErrorString());
+	}
 
-
+	if (!GetCatFeatureIndices(modelHandle, &arrCat , &cat_count2))
+	{
+		elog(ERROR,"get model categorical feature indexes: %s", GetErrorString());
+	}
 
 
 	form = GetPredictTableFormByName((const char*)stmt->tablename);
-	tupdesc = CreateTemplateTupleDesc(form->relnatts + 1);
+	table_natts = form->relnatts;
+	arrTypes = palloc0(sizeof(int) * table_natts);
+	featureNames = (char**)palloc0(sizeof(char*) * table_natts);
 
+	if (!GetModelUsedFeaturesNames(modelHandle, &featureNames, &featureCount))
+	{
+		elog(ERROR,"get model feature names: %s", GetErrorString());
+	}
+
+
+	tupdesc = CreateTemplateTupleDesc(form->relnatts + 1);
 	PredictTableOid = form->oid;
 
-	values = (Datum*)palloc0( sizeof(Datum) * form->relnatts);
-	nulls = (bool *) palloc0(sizeof(bool) * form->relnatts);
-	outvalues = (Datum*)palloc0( sizeof(Datum) * (form->relnatts + 1));
-	outnulls = (bool *) palloc0(sizeof(bool) * (form->relnatts + 1));
+	values = (Datum*)palloc0( sizeof(Datum) * table_natts);
+	nulls = (bool *) palloc0(sizeof(bool) * table_natts);
+	outvalues = (Datum*)palloc0( sizeof(Datum) * (table_natts + 1));
+	outnulls = (bool *) palloc0(sizeof(bool) * (table_natts + 1));
 
 	/* attribute table scanning */
-	rel = table_open(AttributeRelationId, RowExclusiveLock);
+	rel = table_open(AttributeRelationId, RowExclusiveLock); // shareLock ??
 
 	ScanKeyInit(&skey[0],
 				Anum_pg_attribute_attrelid,
@@ -469,6 +478,41 @@ PredictModelExecuteStmt(CreateModelStmt *stmt, DestReceiver *dest)
 	table_close(rel, RowExclusiveLock);
 
 	/* end create tupledesc of out data*/
+
+	for (i = 0; i < table_natts; i++)
+	{
+		for (j=0; j < float_count; j++)
+		{
+			if (strcmp(NameStr(tupdesc->attrs[i].attname) , featureNames[arrFloat[j]]) == 0)
+			{
+				arrTypes[i] = ML_FEATURE_FLOAT;
+			}
+		}
+	}
+
+	for (i = 0; i < table_natts; i++)
+	{
+		for (j=0; j < cat_count; j++)
+		{
+			if (strcmp(NameStr(tupdesc->attrs[i].attname) , featureNames[arrCat[j]]) == 0)
+			{
+				arrTypes[i] = ML_FEATURE_CATEGORICAL;
+			}
+		}
+	}
+
+	for (i=0;i < form->relnatts; i++)
+	{
+		elog(WARNING, "%s [%d]=%d", NameStr(tupdesc->attrs[i].attname),i, arrTypes[i]);
+	}
+
+
+
+	free(arrFloat); // allocated in GetFloatFeatureIndices
+	free(arrCat);   // allocated in GetCatFeatureIndices
+	pfree(arrTypes);
+
+
 
 
 	/* prepare for projection of tuples */

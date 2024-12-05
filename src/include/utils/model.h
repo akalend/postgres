@@ -46,3 +46,12 @@ typedef enum Anum_ml_name_idx
 } Anum_ml_name_idx;
 
 #define Natts_ml_name_idx (_Anum_ml_name_idx_max - 1)
+
+
+enum ml_feature_type
+{
+	ML_FEATURE_NONE = 0,
+	ML_FEATURE_FLOAT ,
+	ML_FEATURE_CATEGORICAL ,
+	ML_FEATURE_TEXT ,
+};
