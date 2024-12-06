@@ -46,6 +46,8 @@ static char * GetFeaturesInfo(ModelCalcerHandle *modelHandle, int *resultLen);
 static char* CreateJsonModelParameters(CreateModelStmt *stmt);
 static Datum LoadFileToBuffer(const char * tmp_name,  int file_length,void **model_buffer);
 static Datum GetFeaturesFieldInfo(void* model_buffer, int file_length);
+static ml_Features_Count CreateTemplateTypesOfRecord(ModelCalcerHandle *modelHandle, TupleDesc tupdesc, int32** arrTypes);
+
 
 static char * ArrayToStringList(char **featureName, int featureCount);
 static char * IntArrayToStringList(size_t *featureData, int featureCount);
@@ -387,6 +389,66 @@ TupleDesc GetPredictModelResultDesc(PredictModelStmt *node){
 	return tupdesc;
 }
 
+static ml_Features_Count
+CreateTemplateTypesOfRecord(ModelCalcerHandle *modelHandle, TupleDesc tupdesc, int32** arrTypes)
+{
+	int32 i,j;
+	size_t *  arrFloat;
+	size_t *  arrCat;
+	char **featureNames;
+	size_t  cat_count2, float_count2, featureCount;
+	int32 table_natts = tupdesc->natts;
+	int32 *p = *arrTypes;
+	ml_Features_Count features_count; 
+
+	features_count.cat_cnt = GetCatFeaturesCount(modelHandle);
+	features_count.float_cnt = GetFloatFeaturesCount(modelHandle);
+
+	if (!GetModelUsedFeaturesNames(modelHandle, &featureNames, &featureCount))
+	{
+		elog(ERROR,"get model feature names: %s", GetErrorString());
+	}
+
+	if (!GetFloatFeatureIndices(modelHandle, &arrFloat , &float_count2))
+	{
+		elog(ERROR,"get model float feature indexes: %s", GetErrorString());
+	}
+
+	if (!GetCatFeatureIndices(modelHandle, &arrCat , &cat_count2))
+	{
+		elog(ERROR,"get model categorical feature indexes: %s", GetErrorString());
+	}
+
+	for (i = 0; i < table_natts; i++)
+	{
+		for (j=0; j < features_count.cat_cnt; j++)
+		{
+			if (strcmp(tupdesc->attrs[i].attname.data , featureNames[arrFloat[j]]) == 0)
+			{
+				p[i] = ML_FEATURE_FLOAT;
+			}
+		}
+	}
+
+	for (i = 0; i < table_natts; i++)
+	{
+		for (j=0; j < features_count.float_cnt; j++)
+		{
+			if (strcmp(tupdesc->attrs[i].attname.data, featureNames[arrCat[j]]) == 0)
+			{
+				p[i] = ML_FEATURE_CATEGORICAL;
+			}
+		}
+	}
+
+	free(arrFloat); // allocated in c_api GetFloatFeatureIndices
+	free(arrCat);   // allocated in c_api GetCatFeatureIndices
+	free(featureNames); // возможно стоит удалить  каждый элемент featureNames
+
+	return features_count;
+}
+
+
 void
 PredictModelExecuteStmt(CreateModelStmt *stmt, DestReceiver *dest)
 {
@@ -403,43 +465,23 @@ PredictModelExecuteStmt(CreateModelStmt *stmt, DestReceiver *dest)
 	MemoryContext resultcxt, oldcxt;
 	Oid PredictTableOid;
 	ModelCalcerHandle *modelHandle;
-	size_t  cat_count2,cat_count, float_count;
-	int32  i,j, table_natts, featureCount;
-	size_t *  arrFloat;
-	size_t *  arrCat;
-	int *  arrTypes;
-	char **featureNames;
+	int32  i, table_natts;
+	int32 *  arrTypes;
+	ml_Features_Count features_count;
+	char **arrCat;
+	float *arrFloat;
+	size_t model_dimension;
+	double* result_pa;
 
 	/* This is the context that we will allocate our output data in */
 	resultcxt = CurrentMemoryContext;
 	oldcxt = MemoryContextSwitchTo(resultcxt);
 
-	modelHandle = GetMlModelByName((const char*)stmt->modelname);
-
-	cat_count = GetCatFeaturesCount(modelHandle);
-	float_count = GetFloatFeaturesCount(modelHandle);
-
-
-	if (!GetFloatFeatureIndices(modelHandle, &arrFloat , &float_count))
-	{
-		elog(ERROR,"get model float feature indexes: %s", GetErrorString());
-	}
-
-	if (!GetCatFeatureIndices(modelHandle, &arrCat , &cat_count2))
-	{
-		elog(ERROR,"get model categorical feature indexes: %s", GetErrorString());
-	}
-
-
 	form = GetPredictTableFormByName((const char*)stmt->tablename);
 	table_natts = form->relnatts;
-	arrTypes = palloc0(sizeof(int) * table_natts);
-	featureNames = (char**)palloc0(sizeof(char*) * table_natts);
 
-	if (!GetModelUsedFeaturesNames(modelHandle, &featureNames, &featureCount))
-	{
-		elog(ERROR,"get model feature names: %s", GetErrorString());
-	}
+	arrTypes = palloc0(sizeof(int32) * table_natts);
+
 
 
 	tupdesc = CreateTemplateTupleDesc(form->relnatts + 1);
@@ -479,40 +521,14 @@ PredictModelExecuteStmt(CreateModelStmt *stmt, DestReceiver *dest)
 
 	/* end create tupledesc of out data*/
 
-	for (i = 0; i < table_natts; i++)
-	{
-		for (j=0; j < float_count; j++)
-		{
-			if (strcmp(NameStr(tupdesc->attrs[i].attname) , featureNames[arrFloat[j]]) == 0)
-			{
-				arrTypes[i] = ML_FEATURE_FLOAT;
-			}
-		}
-	}
+	modelHandle = GetMlModelByName((const char*)stmt->modelname);
+	model_dimension = (size_t)GetDimensionsCount(modelHandle);
+	result_pa  = (double*) palloc( sizeof(double) * model_dimension);
 
-	for (i = 0; i < table_natts; i++)
-	{
-		for (j=0; j < cat_count; j++)
-		{
-			if (strcmp(NameStr(tupdesc->attrs[i].attname) , featureNames[arrCat[j]]) == 0)
-			{
-				arrTypes[i] = ML_FEATURE_CATEGORICAL;
-			}
-		}
-	}
+	features_count = CreateTemplateTypesOfRecord(modelHandle, tupdesc, &arrTypes);
 
-	for (i=0;i < form->relnatts; i++)
-	{
-		elog(WARNING, "%s [%d]=%d", NameStr(tupdesc->attrs[i].attname),i, arrTypes[i]);
-	}
-
-
-
-	free(arrFloat); // allocated in GetFloatFeatureIndices
-	free(arrCat);   // allocated in GetCatFeatureIndices
-	pfree(arrTypes);
-
-
+	arrCat   = palloc0(sizeof(char*) * features_count.cat_cnt);
+	arrFloat = palloc0(sizeof(float) * features_count.float_cnt);
 
 
 	/* prepare for projection of tuples */
@@ -522,30 +538,95 @@ PredictModelExecuteStmt(CreateModelStmt *stmt, DestReceiver *dest)
 	rel = table_open(PredictTableOid, AccessShareLock);
 	scan = table_beginscan(rel, GetLatestSnapshot(), 0, NULL);
 
-	while ((tup = heap_getnext(scan, ForwardScanDirection)) != NULL)
 	{
-		int i;
-		CHECK_FOR_INTERRUPTS();
-		if (!HeapTupleIsValid(tup))
+		int32 j=0, float_cnt =0, cat_cnt = 0;
+		while ((tup = heap_getnext(scan, ForwardScanDirection)) != NULL)
 		{
-			elog(ERROR, " lookup failed for tuple");
-		}
+			int i;
+			float_cnt =0;
+			cat_cnt = 0;
+			if (j++ > 3) break;
 
-		/* Data row */
-		heap_deform_tuple(tup, 	tupdesc, values, nulls);
+			CHECK_FOR_INTERRUPTS();
+			if (!HeapTupleIsValid(tup))
+			{
+				elog(ERROR, " lookup failed for tuple");
+			}
 
-		for (i=0; i < form->relnatts; i++)
-		{
-					outvalues[i] = values[i];
-					outnulls[i] = nulls[i];
+			/* Data row */
+			heap_deform_tuple(tup, 	tupdesc, values, nulls);
+
+			for (i=0; i < form->relnatts; i++)
+			{
+				if (arrTypes[i] == ML_FEATURE_FLOAT)
+				{
+
+					switch (tupdesc->attrs[i].atttypid)
+					{
+						case FLOAT4OID: 
+							arrFloat[float_cnt] = (float)DatumGetFloat4(values[i]);
+							break;
+						case FLOAT8OID: 
+							arrFloat[float_cnt] = (float)DatumGetFloat8(values[i]);
+							break;
+						case INT4OID: 
+							arrFloat[float_cnt] = (float) DatumGetInt32(values[i]);
+							break;
+						case INT8OID: 
+							arrFloat[float_cnt] = (float)DatumGetInt64(values[i]);
+							break;
+						case INT2OID: 
+							arrFloat[float_cnt] = (float)DatumGetInt16(values[i]);
+							break;
+						case BOOLOID: 
+							arrFloat[float_cnt] = (float)DatumGetBool(values[i]);
+							break;
+						default:
+							elog(ERROR,"field %s type oid=%d undefined", NameStr(tupdesc->attrs[i].attname), tupdesc->attrs[i].atttypid);
+					}
+
+					elog(WARNING, "float field %s", NameStr(tupdesc->attrs[i].attname));
+					float_cnt++;
+				}
+
+				if (arrTypes[i] == ML_FEATURE_CATEGORICAL)
+				{
+					switch (tupdesc->attrs[i].atttypid)
+					{
+						case TEXTOID: 
+						case BPCHAROID:
+							arrCat[cat_cnt] = DatumGetCString(values[i]);
+							break;
+						default:
+							elog(ERROR,"field %s type oid=%d undefined", NameStr(tupdesc->attrs[i].attname), tupdesc->attrs[i].atttypid);
+					}
+					cat_cnt++;
+				}
+
+				outvalues[i] = values[i];
+				outnulls[i] = nulls[i];
+			}
+
+			if ( !CalcModelPredictionSingle(
+			        modelHandle,
+        			arrFloat, features_count.float_cnt,
+        			arrCat, features_count.cat_cnt,
+        			result_pa, model_dimension)
+				)
+			{
+				elog(ERROR, "prediction error in row %d: %s",j, GetErrorString());
+			}
+
+			outvalues[form->relnatts] = 777;
+			do_tup_output(tstate, outvalues, outnulls);
 		}
-		outvalues[form->relnatts] = 777;
-		do_tup_output(tstate, outvalues, outnulls);
 	}
 	end_tup_output(tstate);
 
-	table_endscan(scan);
+	pfree(arrTypes);
 	table_close(rel, AccessShareLock);
+
+	table_endscan(scan);
 
 	MemoryContextSwitchTo(oldcxt);
 }
