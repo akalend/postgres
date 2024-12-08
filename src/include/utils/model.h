@@ -55,9 +55,3 @@ enum ml_feature_type
 	ML_FEATURE_CATEGORICAL ,
 	ML_FEATURE_TEXT ,
 };
-
-typedef struct ml_Features_Count
-{
-	int32 float_cnt;
-	int32 cat_cnt;
-} ml_Features_Count;
