@@ -45,7 +45,7 @@ static ModelCalcerHandle* GetMlModelByName(const char * name);
 static char * GetFeaturesInfo(ModelCalcerHandle *modelHandle, int *resultLen);
 static char* CreateJsonModelParameters(CreateModelStmt *stmt);
 static Datum LoadFileToBuffer(const char * tmp_name,  int file_length,void **model_buffer);
-static Datum GetFeaturesFieldInfo(void* model_buffer, int file_length);
+static Datum GetFeaturesFieldInfo(void* model_buffer, int file_length, char **parms);
 static void CreateTemplateTypesOfRecord(ModelCalcerHandle *modelHandle, TupleDesc tupdesc, int32** arrTypes);
 
 
@@ -165,11 +165,13 @@ LoadFileToBuffer(const char * tmp_name,  int file_length, void **model_buffer)
 	return PointerGetDatum(result);
 }
 
-
+/*
+ * deallocate the result of function
+ */
 static Datum 
-GetFeaturesFieldInfo(void* model_buffer, int file_length)
+GetFeaturesFieldInfo(void* model_buffer, int file_length, char** parms)
 {
-	char *modelInfo;
+	char *modelInfo, *info;
 	int len;
 	text *infoOutDatum;
 	ModelCalcerHandle *modelHandle = ModelCalcerCreate();
@@ -178,14 +180,16 @@ GetFeaturesFieldInfo(void* model_buffer, int file_length)
 		elog(ERROR, "LoadFullModelFromBuffer error message: %s\n", GetErrorString());
 	}
 
-
+    info = GetModelInfoValue(modelHandle, "params", 6); // strlen("parms")
 	modelInfo = GetFeaturesInfo(modelHandle, &len);
 
 	infoOutDatum = (text *) palloc(len + VARHDRSZ);
 	SET_VARSIZE(infoOutDatum, len + VARHDRSZ);
 	memcpy(VARDATA(infoOutDatum), modelInfo, len);
-
+	*parms = pstrdup(info);
+	// free(info);
 	ModelCalcerDelete(modelHandle);
+
 	return PointerGetDatum(infoOutDatum);
 }
 
@@ -224,11 +228,7 @@ GetFeaturesInfo(ModelCalcerHandle *modelHandle, int *resultLen)
 
 	appendStringInfo(outInfoString, "{ \"fieldList\":\"%s\",", strbuf);
 	
-	
-	featureCount = GetCatFeaturesCount(modelHandle);
-	indices = palloc0(sizeof(size_t) * featureCount);
-
-	
+		
 	if (!GetCatFeatureIndices(modelHandle, &indices, &featureCount))
 	{
 		elog(ERROR,"CatBoost error: %s", GetErrorString());
@@ -237,13 +237,8 @@ GetFeaturesInfo(ModelCalcerHandle *modelHandle, int *resultLen)
 
 	strbuf = IntArrayToStringList(indices, featureCount);
 	appendStringInfo(outInfoString, " \"CategoryFieldList\":\"%s\",", strbuf);
-	// pfree(strbuf);
-	// pfree(indices);
+	free(indices);
 
-
-
-	featureCount = GetFloatFeaturesCount(modelHandle);
-	indices = palloc0(sizeof(size_t) * featureCount);
 
 	if (!GetFloatFeatureIndices(modelHandle, &indices, &featureCount))
 	{
@@ -254,7 +249,7 @@ GetFeaturesInfo(ModelCalcerHandle *modelHandle, int *resultLen)
 	strbuf = IntArrayToStringList(indices, featureCount);
 	appendStringInfo(outInfoString, " \"FloatFieldList\":\"%s\"}", strbuf);
 	// pfree(strbuf);
-	// pfree(indices);
+	free(indices);
 
 
 	data = outInfoString->data;
@@ -383,7 +378,7 @@ TupleDesc GetPredictModelResultDesc(PredictModelStmt *node){
 	}
 
 	TupleDescInitEntry(tupdesc, (AttrNumber) (form->relnatts + 1), "class",
-							FLOAT4OID, -1, 0);
+							INT4OID, -1, 0);
 
 	index_endscan(scan);
 	ExecDropSingleTupleTableSlot(slot);
@@ -404,7 +399,7 @@ CreateTemplateTypesOfRecord(ModelCalcerHandle *modelHandle, TupleDesc tupdesc, i
 	size_t  cat_count, float_count, featureCount;
 	int32 table_natts = tupdesc->natts;
 	int32 *p = *arrTypes;
-	int32 *Transform ;
+	int32 *model2Table;
 
 
 	if (!GetModelUsedFeaturesNames(modelHandle, &featureNames, &featureCount))
@@ -412,26 +407,20 @@ CreateTemplateTypesOfRecord(ModelCalcerHandle *modelHandle, TupleDesc tupdesc, i
 		elog(ERROR,"get model feature names: %s", GetErrorString());
 	}
 
-	Transform = palloc(sizeof(int32) * table_natts);
-	memset(Transform, -1, sizeof(int32) * table_natts);
+	model2Table = palloc(sizeof(int32) * featureCount);
+	memset(p, -1, sizeof(int32) * table_natts);
 
-	for (i = 0; i < table_natts; i++)
+	for (i = 0; i < featureCount; i++)
 	{	
-		p[i] = -1;
-		for (j=0; j < featureCount; j++)
+		// p[i] = -1;
+		for (j=0; j < table_natts; j++)
 		{
-			if (strcmp(tupdesc->attrs[i].attname.data, featureNames[j]) == 0)
+			if (strcmp(tupdesc->attrs[j].attname.data, featureNames[i]) == 0)
 			{
-				Transform[i] = j;
+				model2Table[i] = j;
 				break;
 			}
 		}
-	}
-
-	elog(WARNING,"==========",Transform[i]);
-	for (i = 0; i < table_natts; i++)
-	{
-		elog(WARNING,"init=%d",Transform[i]);
 	}
 
 	if (!GetFloatFeatureIndices(modelHandle, &arrFloat , &float_count))
@@ -444,36 +433,36 @@ CreateTemplateTypesOfRecord(ModelCalcerHandle *modelHandle, TupleDesc tupdesc, i
 		elog(ERROR,"get model categorical feature indexes: %s", GetErrorString());
 	}
 
-	for (i=0; i < table_natts; i++)
+	j = 0;
+	for (i=0; i < featureCount; i++)
 	{
-		for(j=0; j<float_count; j++)
+		if (i == arrFloat[j])
 		{
-			if (Transform[i] == arrFloat[j])
-			{
-				p[i] = arrFloat[j] + 1000;
-				break;
-			}
+			p[model2Table[i]] = 1000 + j;
+			j++;
+			continue;
 		}
 
-		for(j=0; j<cat_count; j++)
-		{
-			if (Transform[i] == arrCat[j])
-			{
-				p[i] = arrCat[j];
-				break;
-			}
-		}
-
-	}		
-	
-	elog(WARNING,"------------");
-
-	for (i = 0; i < table_natts; i++)
-	{
-		elog(WARNING,"out=%d",p[i]);
+		if (j > float_count)
+			elog(ERROR, "feature count is owerflow");
 	}
 
-	pfree(Transform);
+	j=0;
+	for (i=0; i < featureCount; i++)
+	{
+		if (i == arrCat[j])
+		{
+			p[model2Table[i]] = j;
+			j++;
+			continue;
+		}
+		if (j > cat_count)
+			elog(ERROR, "feature count is owerflow");
+	}
+
+
+	elog(WARNING,"cat=%ld float=%ld" , cat_count, float_count);
+	pfree(model2Table);
 	free(arrFloat); // allocated in c_api GetFloatFeatureIndices
 	free(arrCat);   // allocated in c_api GetCatFeatureIndices
 	free(featureNames); // возможно стоит удалить  каждый элемент featureNames
@@ -502,7 +491,7 @@ PredictModelExecuteStmt(CreateModelStmt *stmt, DestReceiver *dest)
 	float *arrFloat;
 	size_t model_dimension;
 	double* result_pa;
-	float cat_cnt, float_cnt;
+	size_t cat_cnt, float_cnt;
 
 	/* This is the context that we will allocate our output data in */
 	resultcxt = CurrentMemoryContext;
@@ -543,7 +532,8 @@ PredictModelExecuteStmt(CreateModelStmt *stmt, DestReceiver *dest)
 							record->atttypid, -1, 0);
 	}
 
-	TupleDescInitEntry(tupdesc, (AttrNumber) form->relnatts+1, "class", FLOAT4OID, -1, 0);
+
+	TupleDescInitEntry(tupdesc, (AttrNumber) form->relnatts+1, "class", INT4OID, -1, 0);
 
 	systable_endscan(sscan);
 	table_close(rel, RowExclusiveLock);
@@ -556,22 +546,14 @@ PredictModelExecuteStmt(CreateModelStmt *stmt, DestReceiver *dest)
 
 	CreateTemplateTypesOfRecord(modelHandle, tupdesc, &arrTypes);
 
-	for (i=0; i< table_natts; i++)
-	{
-		elog(WARNING,"%d. %d",i, arrTypes[i]);
-	}
-
-	elog(WARNING,"------------");
-
 	cat_cnt = GetCatFeaturesCount(modelHandle);
 	float_cnt = GetFloatFeaturesCount(modelHandle);
+
 	arrCat   = palloc0(sizeof(char*) * cat_cnt);
 	arrFloat = palloc0(sizeof(float) * float_cnt);
 
-
 	/* prepare for projection of tuples */
 	tstate = begin_tup_output_tupdesc(dest, tupdesc, &TTSOpsVirtual);
-
 
 	rel = table_open(PredictTableOid, AccessShareLock);
 	scan = table_beginscan(rel, GetLatestSnapshot(), 0, NULL);
@@ -581,7 +563,6 @@ PredictModelExecuteStmt(CreateModelStmt *stmt, DestReceiver *dest)
 		while ((tup = heap_getnext(scan, ForwardScanDirection)) != NULL)
 		{
 			int32 i, float_id = 0, cat_id = 0;
-			if (row_count ++ > 12) break;
 
 			CHECK_FOR_INTERRUPTS();
 			if (!HeapTupleIsValid(tup))
@@ -594,6 +575,7 @@ PredictModelExecuteStmt(CreateModelStmt *stmt, DestReceiver *dest)
 
 			for (i=0; i < form->relnatts; i++)
 			{
+				char* p = NameStr(tupdesc->attrs[i].attname);
 				if (arrTypes[i] >= 1000)
 				{
 					float_id = arrTypes[i] - 1000;
@@ -620,17 +602,16 @@ PredictModelExecuteStmt(CreateModelStmt *stmt, DestReceiver *dest)
 						default:
 							elog(ERROR,"field %s type oid=%d undefined", NameStr(tupdesc->attrs[i].attname), tupdesc->attrs[i].atttypid);
 					}
-
 				}
 
-				if (arrTypes[i] > 0 && arrTypes[i] < 1000)
+				if (arrTypes[i] >= 0 && arrTypes[i] < 1000)
 				{
 					cat_id = arrTypes[i];
 					switch (tupdesc->attrs[i].atttypid)
 					{
 						case TEXTOID: 
 						case BPCHAROID:
-							arrCat[cat_id] = DatumGetCString(values[i]);
+							arrCat[cat_id] = TextDatumGetCString(values[i]);
 							break;
 						default:
 							elog(ERROR,"field %s type oid=%d undefined", NameStr(tupdesc->attrs[i].attname), tupdesc->attrs[i].atttypid);
@@ -651,11 +632,16 @@ PredictModelExecuteStmt(CreateModelStmt *stmt, DestReceiver *dest)
 				elog(ERROR, "prediction error in row %d: %s",j, GetErrorString());
 			}
 
-			elog( WARNING, "model prediction %6.4f res=%d %6.4f", sigmoid(result_pa[0]), DatumGetBool(values[12]), result_pa[0]);
-			outvalues[form->relnatts] = sigmoid(result_pa[0]);
+			for( j=0; j < cat_cnt; j++){
+				pfree(arrCat[j]);
+			}
+		
+			outvalues[form->relnatts] =  result_pa[0] > 0.5 ? 1 : 0;
 			do_tup_output(tstate, outvalues, outnulls);
 		}
 	}
+
+	do_tup_output(tstate, outvalues, outnulls);
 	end_tup_output(tstate);
 
 	pfree(arrTypes);
@@ -689,9 +675,16 @@ CreateModelExecuteStmt(CreateModelStmt *stmt, DestReceiver *dest)
 	int rc;
 	const char* tmp_name = tempnam("/tmp/", "cbm_");
 	int file_length;
-	void* model_buffer;
-	char * str_parameter;
+	void *model_buffer;
+	char *str_parameter;
+	char model_type[2] = {'C', '\0'};
+	char *parms;
 
+
+	if (stmt->modelclass == CREATE_MODEL_REGRESSION)
+	{
+		model_type[0] = 'R';
+	}
 
 	namestrcpy(&name_name, stmt->modelname);
 
@@ -704,7 +697,7 @@ CreateModelExecuteStmt(CreateModelStmt *stmt, DestReceiver *dest)
 	}
 	res = OidFunctionCall5(  mlJsonWrapperOid, 
 					CStringGetTextDatum(stmt->modelname),
-					DatumGetInt32(stmt->modelclass),
+					Int32GetDatum(stmt->modelclass),
 					CStringGetTextDatum(str_parameter),
 					CStringGetTextDatum(stmt->tablename),
 					CStringGetTextDatum(tmp_name));
@@ -770,6 +763,10 @@ CreateModelExecuteStmt(CreateModelStmt *stmt, DestReceiver *dest)
 		found = true;
 	}
 
+	nulls[Anum_ml_model_type-1] = false;
+	values[Anum_ml_model_type-1] = CStringGetTextDatum(model_type);
+	doReplace[Anum_ml_model_type-1]  = true;
+
 	nulls[Anum_ml_model_acc-1] = false;
 	values[Anum_ml_model_acc-1] = Float4GetDatum(DatumGetFloat8(res));
 	doReplace[Anum_ml_model_acc-1]  = true;
@@ -784,8 +781,12 @@ CreateModelExecuteStmt(CreateModelStmt *stmt, DestReceiver *dest)
 	doReplace[Anum_ml_model_data-1]  = true;
 
 	nulls[Anum_ml_model_fieldlist-1] = false;
-	values[Anum_ml_model_fieldlist-1] = GetFeaturesFieldInfo(model_buffer, file_length);
+	values[Anum_ml_model_fieldlist-1] = GetFeaturesFieldInfo(model_buffer, file_length, &parms);
 	doReplace[Anum_ml_model_fieldlist-1]  = true;
+
+	nulls[Anum_ml_model_info-1] = false;
+	values[Anum_ml_model_info-1] = CStringGetTextDatum(parms);
+	doReplace[Anum_ml_model_info-1]  = true;
 
 
 	if (found)
