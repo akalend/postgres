@@ -1,5 +1,6 @@
 #include <sys/stat.h>
 #include <errno.h>
+#include <math.h>
 #include "postgres.h"
 #include "c.h"
 #include "fmgr.h"
@@ -30,6 +31,7 @@
 #include "utils/c_api.h"
 #include "tcop/dest.h"
 #include "utils/builtins.h"
+#include "utils/jsonb.h"
 #include "utils/model.h"
 #include "utils/rel.h"
 #include "utils/syscache.h"
@@ -40,15 +42,17 @@
 
 #define QUOTEMARK '"'
 
+static char *numeric_to_cstring(Numeric n);
 static TupleDesc GetMlModelTableDesc(void);
-static ModelCalcerHandle* GetMlModelByName(const char * name);
+static ModelCalcerHandle* GetMlModelByName(const char * name, char** classes_json_str);
 static char * GetFeaturesInfo(ModelCalcerHandle *modelHandle, int *resultLen);
 static char* CreateJsonModelParameters(CreateModelStmt *stmt);
 static Datum LoadFileToBuffer(const char * tmp_name,  int file_length,void **model_buffer);
-static Datum GetFeaturesFieldInfo(void* model_buffer, int file_length, char **parms);
+static Datum GetFeaturesFieldInfo(void* model_buffer, int file_length, char **parms, char** classes);
 static void CreateTemplateTypesOfRecord(ModelCalcerHandle *modelHandle, TupleDesc tupdesc, int32** arrTypes);
 
 
+static char** GetClassesFromJson(char* classes_json_str);
 static char * ArrayToStringList(char **featureName, int featureCount);
 static char * IntArrayToStringList(size_t *featureData, int featureCount);
 
@@ -66,6 +70,15 @@ static Oid MetadataTableIdxOid = InvalidOid;
 inline static double
 sigmoid(double x) {
 	return 1. / (1. + exp(-x));
+}
+
+
+static char *
+numeric_to_cstring(Numeric n)
+{
+	Datum		d = NumericGetDatum(n);
+
+	return DatumGetCString(DirectFunctionCall1(numeric_out, d));
 }
 
 
@@ -101,6 +114,7 @@ GetMlModelTableDesc(void)
 	TupleDescInitEntry(tupdesc, 5, "info", TEXTOID, -1, 0);
 	TupleDescInitEntry(tupdesc, 6, "args", TEXTOID, -1, 0);
 	TupleDescInitEntry(tupdesc, 7, "data", BYTEAOID, -1, 0);
+	TupleDescInitEntry(tupdesc, 8, "classes", BYTEAOID, -1, 0);
 	return tupdesc;
 }
 
@@ -169,9 +183,9 @@ LoadFileToBuffer(const char * tmp_name,  int file_length, void **model_buffer)
  * deallocate the result of function
  */
 static Datum 
-GetFeaturesFieldInfo(void* model_buffer, int file_length, char** parms)
+GetFeaturesFieldInfo(void* model_buffer, int file_length, char** parms, char** classes)
 {
-	char *modelInfo, *info;
+	char *modelInfo, *info, *classes_tmp;
 	int len;
 	text *infoOutDatum;
 	ModelCalcerHandle *modelHandle = ModelCalcerCreate();
@@ -183,11 +197,16 @@ GetFeaturesFieldInfo(void* model_buffer, int file_length, char** parms)
     info = GetModelInfoValue(modelHandle, "params", 6); // strlen("parms")
 	modelInfo = GetFeaturesInfo(modelHandle, &len);
 
+    classes_tmp = GetModelInfoValue(modelHandle, "class_params", 12); // strlen("class_parms")
+    *classes = pstrdup(classes_tmp);
+
 	infoOutDatum = (text *) palloc(len + VARHDRSZ);
 	SET_VARSIZE(infoOutDatum, len + VARHDRSZ);
 	memcpy(VARDATA(infoOutDatum), modelInfo, len);
 	*parms = pstrdup(info);
-	// free(info);
+
+	// free(parms) ???
+	// free(info); // ????
 	ModelCalcerDelete(modelHandle);
 
 	return PointerGetDatum(infoOutDatum);
@@ -378,7 +397,7 @@ TupleDesc GetPredictModelResultDesc(PredictModelStmt *node){
 	}
 
 	TupleDescInitEntry(tupdesc, (AttrNumber) (form->relnatts + 1), "class",
-							INT4OID, -1, 0);
+							TEXTOID, -1, 0);
 
 	index_endscan(scan);
 	ExecDropSingleTupleTableSlot(slot);
@@ -461,7 +480,6 @@ CreateTemplateTypesOfRecord(ModelCalcerHandle *modelHandle, TupleDesc tupdesc, i
 	}
 
 
-	elog(WARNING,"cat=%ld float=%ld" , cat_count, float_count);
 	pfree(model2Table);
 	free(arrFloat); // allocated in c_api GetFloatFeatureIndices
 	free(arrCat);   // allocated in c_api GetCatFeatureIndices
@@ -485,13 +503,13 @@ PredictModelExecuteStmt(CreateModelStmt *stmt, DestReceiver *dest)
 	MemoryContext resultcxt, oldcxt;
 	Oid PredictTableOid;
 	ModelCalcerHandle *modelHandle;
-	int32  table_natts, i, row_count = 0;
+	int32  table_natts, i;
 	int32 *  arrTypes;
-	char **arrCat;
+	char **arrCat, *classes_json_str, **classes;
 	float *arrFloat;
 	size_t model_dimension;
 	double* result_pa;
-	size_t cat_cnt, float_cnt;
+	size_t cat_cnt, float_cnt;	
 
 	/* This is the context that we will allocate our output data in */
 	resultcxt = CurrentMemoryContext;
@@ -533,14 +551,20 @@ PredictModelExecuteStmt(CreateModelStmt *stmt, DestReceiver *dest)
 	}
 
 
-	TupleDescInitEntry(tupdesc, (AttrNumber) form->relnatts+1, "class", INT4OID, -1, 0);
+	TupleDescInitEntry(tupdesc, (AttrNumber) form->relnatts+1, "class", TEXTOID, -1, 0);
 
 	systable_endscan(sscan);
 	table_close(rel, RowExclusiveLock);
 
 	/* end create tupledesc of out data*/
 
-	modelHandle = GetMlModelByName((const char*)stmt->modelname);
+	modelHandle = GetMlModelByName((const char*)stmt->modelname, &classes_json_str);
+	classes = GetClassesFromJson(classes_json_str);
+
+	elog(WARNING, "class %s", classes[0]);
+	elog(WARNING, "class %s", classes[1]);
+
+
 	model_dimension = (size_t)GetDimensionsCount(modelHandle);
 	result_pa  = (double*) palloc( sizeof(double) * model_dimension);
 
@@ -562,7 +586,7 @@ PredictModelExecuteStmt(CreateModelStmt *stmt, DestReceiver *dest)
 		int32 j=0;
 		while ((tup = heap_getnext(scan, ForwardScanDirection)) != NULL)
 		{
-			int32 i, float_id = 0, cat_id = 0;
+			int32 float_id = 0, cat_id = 0;
 
 			CHECK_FOR_INTERRUPTS();
 			if (!HeapTupleIsValid(tup))
@@ -575,7 +599,7 @@ PredictModelExecuteStmt(CreateModelStmt *stmt, DestReceiver *dest)
 
 			for (i=0; i < form->relnatts; i++)
 			{
-				char* p = NameStr(tupdesc->attrs[i].attname);
+				// char* p = NameStr(tupdesc->attrs[i].attname);
 				if (arrTypes[i] >= 1000)
 				{
 					float_id = arrTypes[i] - 1000;
@@ -636,7 +660,7 @@ PredictModelExecuteStmt(CreateModelStmt *stmt, DestReceiver *dest)
 				pfree(arrCat[j]);
 			}
 		
-			outvalues[form->relnatts] =  result_pa[0] > 0.5 ? 1 : 0;
+			outvalues[form->relnatts] = cstring_to_text( classes[result_pa[0] > 0.5 ? 1 : 0]);
 			do_tup_output(tstate, outvalues, outnulls);
 		}
 	}
@@ -644,8 +668,11 @@ PredictModelExecuteStmt(CreateModelStmt *stmt, DestReceiver *dest)
 	do_tup_output(tstate, outvalues, outnulls);
 	end_tup_output(tstate);
 
-	pfree(arrTypes);
+	pfree(arrTypes);	
 	table_close(rel, AccessShareLock);
+	pfree(classes[0]);
+	pfree(classes[1]);
+	pfree(classes);
 
 	table_endscan(scan);
 
@@ -678,7 +705,7 @@ CreateModelExecuteStmt(CreateModelStmt *stmt, DestReceiver *dest)
 	void *model_buffer;
 	char *str_parameter;
 	char model_type[2] = {'C', '\0'};
-	char *parms;
+	char *parms, *classes;
 
 
 	if (stmt->modelclass == CREATE_MODEL_REGRESSION)
@@ -781,13 +808,16 @@ CreateModelExecuteStmt(CreateModelStmt *stmt, DestReceiver *dest)
 	doReplace[Anum_ml_model_data-1]  = true;
 
 	nulls[Anum_ml_model_fieldlist-1] = false;
-	values[Anum_ml_model_fieldlist-1] = GetFeaturesFieldInfo(model_buffer, file_length, &parms);
+	values[Anum_ml_model_fieldlist-1] = GetFeaturesFieldInfo(model_buffer, file_length, &parms, &classes);
 	doReplace[Anum_ml_model_fieldlist-1]  = true;
 
 	nulls[Anum_ml_model_info-1] = false;
 	values[Anum_ml_model_info-1] = CStringGetTextDatum(parms);
 	doReplace[Anum_ml_model_info-1]  = true;
 
+	nulls[Anum_ml_model_classes-1] = false;
+	values[Anum_ml_model_classes-1] = CStringGetTextDatum(classes);
+	doReplace[Anum_ml_model_classes-1]  = true;
 
 	if (found)
 	{
@@ -882,10 +912,85 @@ GetProcOidByName(const char* proname)
 	return found_oid;
 }
 
-static ModelCalcerHandle*
-GetMlModelByName(const char * name)
+static char**
+GetClassesFromJson(char* classes_json_str)
 {
-	Relation rel, idxrel;;
+	char **p, *pp;
+	Jsonb *j;
+
+	Datum dt_buffer  = CStringGetDatum(classes_json_str);
+	Datum res = DirectFunctionCall1(jsonb_in, dt_buffer);
+	j = DatumGetJsonbP(res);
+
+	if (JB_ROOT_IS_OBJECT(j))
+	{
+		JsonbIterator *it;
+		JsonbIteratorToken type;
+		JsonbValue  jb;
+		int32 nElems, i;
+		bool isFinish = false;
+		enum ml_class_state_t classNamesState = ML_STATE_NONE;
+
+		it = JsonbIteratorInit(&j->root);
+		while ((type = JsonbIteratorNext(&it, &jb, false))
+			   != WJB_DONE)
+		{
+			switch(jb.type)
+			{
+				case jbvString :
+					
+					if (classNamesState == ML_STATE_NONE && strncmp(jb.val.string.val, "class_names", 11) == 0)
+					{
+						classNamesState = ML_STATE_KEY;
+					}
+					else if (classNamesState == ML_STATE_BEG_ARRAY)
+					{
+						p[i++] = pnstrdup(jb.val.string.val, jb.val.string.len);
+						if (i > nElems)
+							isFinish = true;
+					}
+					else
+						classNamesState = ML_STATE_NONE;
+					break;
+
+				case jbvArray :
+					if (classNamesState == ML_STATE_KEY && type == WJB_BEGIN_ARRAY)
+					{
+						classNamesState = ML_STATE_BEG_ARRAY;
+						nElems = jb.val.array.nElems;
+						p = (char**) palloc(sizeof(char*) * nElems);
+						i = 0;
+					}
+					if (classNamesState == ML_STATE_BEG_ARRAY && type == WJB_END_ARRAY)
+					{
+						classNamesState = ML_STATE_NONE;
+					}
+					break;
+
+				case jbvNumeric:
+					if (classNamesState == ML_STATE_BEG_ARRAY)
+					{
+						pp = numeric_to_cstring(jb.val.numeric); // allocate ??
+						p[i++] = pstrdup(pp);
+						if (i > nElems)
+							isFinish = true;
+					}
+				default:
+					;
+			}
+
+			if (isFinish)
+				break;
+		}
+	}	
+
+	return p;
+}
+
+static ModelCalcerHandle*
+GetMlModelByName(const char * name, char** classes_json_str)
+{
+	Relation rel, idxrel;
 	ScanKeyData skey[1];
 	IndexScanDesc scan;
 	NameData name_data;
@@ -942,10 +1047,13 @@ GetMlModelByName(const char * name)
 	if (found)
 	{
 		ModelCalcerHandle *modelHandle = ModelCalcerCreate();
-		bytea	   *bstr = DatumGetByteaPP(values[6]);
+		bytea	   *bstr = DatumGetByteaPP(values[Anum_ml_model_data-1]);
+		text *txt = DatumGetTextPP(values[Anum_ml_model_classes-1]);		
 		int len = VARSIZE(bstr);
 		const char* bufferData = VARDATA(bstr);
 		
+		*classes_json_str = text_to_cstring(txt);
+
 		if (!LoadFullModelFromBuffer(modelHandle, bufferData, len))
 		{
 			elog(ERROR, "LoadFullModelFromBuffer error message: %s\n", GetErrorString());

@@ -34,6 +34,7 @@ typedef enum Anum_model
 	Anum_ml_model_info,
 	Anum_ml_model_args,
 	Anum_ml_model_data,
+	Anum_ml_model_classes,
 	_Anum_ml_max,
 } Anum_model;
 
@@ -47,6 +48,13 @@ typedef enum Anum_ml_name_idx
 
 #define Natts_ml_name_idx (_Anum_ml_name_idx_max - 1)
 
+
+enum ml_class_state_t {
+    ML_STATE_NONE,
+    ML_STATE_KEY,
+    ML_STATE_BEG_ARRAY,
+    ML_STATE_BND_ARRAY,
+};
 
 enum ml_feature_type
 {
