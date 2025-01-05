@@ -719,7 +719,7 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 	DETACH DICTIONARY DISABLE_P DISCARD DISTINCT DO DOCUMENT_P DOMAIN_P
 	DOUBLE_P DROP
 
-	EACH ELSE ENABLE_P ENCODING ENCRYPTED END_P ENUM_P ESCAPE EVENT EXCEPT
+	EACH ELSE ENABLE_P ENCODING ENCRYPTED END_P ENUM_P ESCAPE EVAL EVENT EXCEPT
 	EXCLUDE EXCLUDING EXCLUSIVE EXECUTE EXISTS EXPLAIN EXPRESSION
 	EXTENSION EXTERNAL EXTRACT
 
@@ -741,7 +741,7 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 
 	LABEL LANGUAGE LARGE_P LAST_P LATERAL_P
 	LEADING LEAKPROOF LEAST LEFT LEVEL LIKE LIMIT LISTEN LOAD LOCAL
-	LOCALTIME LOCALTIMESTAMP LOCATION LOCK_P LOCKED LOGGED
+	LOCALTIME LOCALTIMESTAMP LOCATION LOCK_P LOCKED LOGGED LOSS
 
 	MAPPING MATCH MATCHED MATERIALIZED MAXVALUE MERGE METHOD
 	MINUTE_P MINVALUE MODE MONTH_P MOVE MODEL
@@ -762,7 +762,7 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 
 	QUOTE
 
-	RANGE READ REAL REASSIGN RECHECK RECURSIVE REF_P REFERENCES REFERENCING
+	RANGE RANKING READ REAL REASSIGN RECHECK RECURSIVE REF_P REFERENCES REFERENCING
 	REFRESH REINDEX REGRESSION RELATIVE_P RELEASE RENAME REPEATABLE REPLACE REPLICA
 	RESET RESTART RESTRICT RETURN RETURNING RETURNS REVOKE RIGHT ROLE ROLLBACK ROLLUP
 	ROUTINE ROUTINES ROW ROWS RULE
@@ -6349,7 +6349,7 @@ enum_val_list:	Sconst
 /*****************************************************************************
  *
  *		QUERY :
- *				CREATE [CLASSIFICATION | REGRESSION] MODEL name ( options ) FROM table
+ *				CREATE [CLASSIFICATION | REGRESSION | RANKING] MODEL name ( options ) FROM table
  *
  *****************************************************************************/
 CreateModelStmt:
@@ -6381,6 +6381,16 @@ CreateModelStmt:
 			n->tablename = $9;
 			n->options = $6;
 			n->modelclass = CREATE_MODEL_REGRESSION;
+			$$ = (Node *) n;
+		}
+	| CREATE RANKING MODEL name '(' OptModelElementList ')' FROM name
+		{
+			CreateModelStmt *n = makeNode(CreateModelStmt);
+			n->objectType = OBJECT_MODEL;
+			n->modelname = $4;
+			n->tablename = $9;
+			n->options = $6;
+			n->modelclass = CREATE_MODEL_RANKING;
 			$$ = (Node *) n;
 		}
 	;
@@ -6434,6 +6444,30 @@ CreateModelStmt:
 			{
 				ModelOptElement *n = makeNode(ModelOptElement);
 				n->parm = MODEL_PARAMETER_IGNORE;
+				n->value = pstrdup($2);
+				n->elements = NULL;
+				$$ = (Node *) n;
+			}
+		| LOSS name
+			{
+				ModelOptElement *n = makeNode(ModelOptElement);
+				n->parm = MODEL_PARAMETER_LOSS_FUNCTION;
+				n->value = pstrdup($2);
+				n->elements = NULL;
+				$$ = (Node *) n;
+			}
+		| LOSS FUNCTION name
+			{
+				ModelOptElement *n = makeNode(ModelOptElement);
+				n->parm = MODEL_PARAMETER_LOSS_FUNCTION;
+				n->value = pstrdup($3);
+				n->elements = NULL;
+				$$ = (Node *) n;
+			}
+		| EVAL name
+			{
+				ModelOptElement *n = makeNode(ModelOptElement);
+				n->parm = MODEL_PARAMETER_EVAL_METRIC;
 				n->value = pstrdup($2);
 				n->elements = NULL;
 				$$ = (Node *) n;
@@ -17156,6 +17190,7 @@ unreserved_keyword:
 			| ENCRYPTED
 			| ENUM_P
 			| ESCAPE
+			| EVAL
 			| EVENT
 			| EXCLUDE
 			| EXCLUDING
@@ -17221,6 +17256,7 @@ unreserved_keyword:
 			| LOCK_P
 			| LOCKED
 			| LOGGED
+			| LOSS
 			| MAPPING
 			| MATCH
 			| MATCHED
@@ -17285,6 +17321,7 @@ unreserved_keyword:
 			| PUBLICATION
 			| QUOTE
 			| RANGE
+			| RANKING
 			| READ
 			| REASSIGN
 			| RECHECK
@@ -17719,6 +17756,7 @@ bare_label_keyword:
 			| END_P
 			| ENUM_P
 			| ESCAPE
+			| EVAL
 			| EVENT
 			| EXCLUDE
 			| EXCLUDING
@@ -17812,6 +17850,7 @@ bare_label_keyword:
 			| LOCK_P
 			| LOCKED
 			| LOGGED
+			| LOSS
 			| MAPPING
 			| MATCH
 			| MATCHED
@@ -17890,6 +17929,7 @@ bare_label_keyword:
 			| PUBLICATION
 			| QUOTE
 			| RANGE
+			| RANKING
 			| READ
 			| REAL
 			| REASSIGN

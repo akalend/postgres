@@ -35,6 +35,7 @@ typedef enum Anum_model
 	Anum_ml_model_args,
 	Anum_ml_model_data,
 	Anum_ml_model_classes,
+	Anum_ml_model_loss_function,
 	_Anum_ml_max,
 } Anum_model;
 
