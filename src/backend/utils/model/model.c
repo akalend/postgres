@@ -123,6 +123,17 @@ GetMlModelTableDesc(void)
 	return tupdesc;
 }
 
+/* TODO:  внедрить следующие метрики:
+'Logloss', 'CrossEntropy', 'CtrFactor', 'Focal', 'RMSE', 'LogCosh', 'Lq', 'MAE', 'Quantile', 'MultiQuantile', 'Expectile',
+'LogLinQuantile', 'MAPE', 'Poisson', 'MSLE', 'MedianAbsoluteError', 'SMAPE', 'Huber', 'Tweedie', 'Cox', 'RMSEWithUncertainty',
+'MultiClass', 'MultiClassOneVsAll', 'PairLogit', 'PairLogitPairwise', 'YetiRank', 'YetiRankPairwise', 'QueryRMSE',
+'QuerySoftMax', 'QueryCrossEntropy', 'StochasticFilter', 'LambdaMart', 'StochasticRank', 'PythonUserDefinedPerObject',
+'PythonUserDefinedMultiTarget', 'UserPerObjMetric', 'UserQuerywiseMetric', 'R2', 'NumErrors', 'FairLoss', 'AUC', 'Accuracy',
+'BalancedAccuracy', 'BalancedErrorRate', 'BrierScore', 'Precision', 'Recall', 'F1', 'TotalF1', 'F', 'MCC', 'ZeroOneLoss', 'HammingLoss',
+'HingeLoss', 'Kappa', 'WKappa', 'LogLikelihoodOfPrediction', 'NormalizedGini', 'PRAUC', 'PairAccuracy', 'AverageGain', 'QueryAverage',
+'QueryAUC', 'PFound', 'PrecisionAt', 'RecallAt', 'MAP', 'NDCG', 'DCG', 'FilteredDCG', 'MRR', 'ERR', 'SurvivalAft', 'MultiRMSE',
+'MultiRMSEWithMissingValues', 'MultiLogloss', 'MultiCrossEntropy', 'Combination'.
+*/
 static const char*
 TransformMetric(char* metric)
 {
@@ -135,6 +146,8 @@ TransformMetric(char* metric)
 	{
 		return "AUC";
 	}
+
+	return "";
 }
 
 /* create in model options parameter*/
