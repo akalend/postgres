@@ -4054,12 +4054,13 @@ typedef struct DropSubscriptionStmt
  * ----------------------
  */
 
-typedef enum CreateModelType
+typedef enum ModelType
 {
-	CREATE_MODEL_CLASSIFICATION,
-	CREATE_MODEL_REGRESSION,
-	CREATE_MODEL_RANKING,
-} CreateModelType;
+	MODEL_TYPE_UNDEFINED,
+	MODEL_TYPE_CLASSIFICATION,
+	MODEL_TYPE_REGRESSION,
+	MODEL_TYPE_RANKING,
+} ModelType;
 
 typedef struct CreateModelStmt
 {
@@ -4067,7 +4068,7 @@ typedef struct CreateModelStmt
 	ObjectType		objectType;		/* OBJECT_FUNCTION, OBJECT_TRIGGER, etc */
 	char	   		*modelname;		/* Model name */
 	char	   		*tablename;		/* data table for learning dataset  */
-	CreateModelType modelclass;		/* class of model  */
+	ModelType modelclass;		/* class of model  */
 	List	   		*options;		/* List of Options nodes */
 } CreateModelStmt;
 
@@ -4101,6 +4102,15 @@ typedef struct PredictModelStmt
 	char	   		*modelname;		/* Model name */
 	char	   		*tablename;		/* data table for learning dataset  */
 } PredictModelStmt;
+
+
+typedef struct LoadModelStmt
+{
+	NodeTag			type;
+	ObjectType		objectType;		/* OBJECT_FUNCTION, OBJECT_TRIGGER, etc */
+	char	   		*modelname;		/* Model name */
+	char	   		*filename;		/* model filename  */
+} LoadModelStmt;
 
 
 

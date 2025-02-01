@@ -4,6 +4,8 @@
 
 void CreateModelExecuteStmt(CreateModelStmt *stmt, DestReceiver *dest);
 void PredictModelExecuteStmt(CreateModelStmt *stmt, DestReceiver *dest);
+void LoadModelExecuteStmt(LoadModelStmt *stmt);
+
 TupleDesc GetCreateModelResultDesc(void);
 Oid GetProcOidByName(const char* proname);
 TupleDesc GetPredictModelResultDesc(PredictModelStmt *node);

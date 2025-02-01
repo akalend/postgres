@@ -59,6 +59,8 @@ static char * GetLossFunctionFromParms(char* parms);
 static char ** GetClassesFromJson(char* classes_json_str);
 static char * ArrayToStringList(char **featureName, int featureCount);
 static char * IntArrayToStringList(size_t *featureData, int featureCount);
+static int LoadModelFromFileAndSaveToMetadata(const char* tmp_name, char* modelname, ModelType model_type,
+												Datum acc, char* str_parameter);
 
 static Form_pg_class GetPredictTableFormByName(const char *tablename);
 static char * read_whole_file(const char *filename, int *length);
@@ -567,7 +569,7 @@ SetPredictionToModel(char* loss_function, ModelCalcerHandle **modelHandle)
 {
 	if (strcmp(loss_function,"Logloss") == 0)
 	{
-		// modelclass = CREATE_MODEL_CLASSIFICATION;
+		// modelclass = MODEL_TYPE_CLASSIFICATION;
 		elog(WARNING,"loss %s APT_RAW_FORMULA_VAL", loss_function);
 		if (!SetPredictionType(*modelHandle, APT_RAW_FORMULA_VAL))
 		{
@@ -576,7 +578,7 @@ SetPredictionToModel(char* loss_function, ModelCalcerHandle **modelHandle)
 	}
 	else if (strcmp(loss_function,"MultiClass") == 0)
 	{
-		// modelclass = CREATE_MODEL_CLASSIFICATION;
+		// modelclass = MODEL_TYPE_CLASSIFICATION;
 		elog(WARNING,"loss %s APT_CLASS", loss_function);
 		if (!SetPredictionType(*modelHandle, APT_CLASS))
 		{
@@ -586,7 +588,7 @@ SetPredictionToModel(char* loss_function, ModelCalcerHandle **modelHandle)
 	else
 	{
 		elog(WARNING,"loss %s APT_RAW_FORMULA_VAL", loss_function);
-		// modelclass = CREATE_MODEL_REGRESSION;
+		// modelclass = MODEL_TYPE_REGRESSION;
 		if (!SetPredictionType(*modelHandle, APT_RAW_FORMULA_VAL))
 		{
 			elog(ERROR, "prediction type error %s", GetErrorString());
@@ -653,7 +655,6 @@ default:
 }
 
 
-
 void
 PredictModelExecuteStmt(CreateModelStmt *stmt, DestReceiver *dest)
 {
@@ -679,7 +680,7 @@ PredictModelExecuteStmt(CreateModelStmt *stmt, DestReceiver *dest)
 	size_t cat_cnt, float_cnt;	
 	// bool isFound = false;
 	char *loss_function;
-	// CreateModelType modelclass;
+	// ModelType modelclass;
 	int32 j=0, max_probability_idx;
 	float4 max_probability;
 
@@ -840,85 +841,70 @@ ObjectIdGetDatum(form->oid));
 	MemoryContextSwitchTo(oldcxt);
 }
 
-/*
- * Model accuratly 
- */
-void
-CreateModelExecuteStmt(CreateModelStmt *stmt, DestReceiver *dest)
+
+static int
+LoadModelFromFileAndSaveToMetadata(const char* tmp_name, char* modelname,
+				 ModelType modelType, Datum acc, char* str_parameter)
 {
-	TupOutputState *tstate;
 	TupleDesc   tupdesc;
 	HeapTuple tup = NULL;
-	Datum res;
-	char *res_out;
+	Datum  *values;
+	bool   *nulls, *doReplace;
+	struct stat st;
+	char model_type[2] = {'C', '\0'};
+	int file_length;
+	char *parms = NULL, *classes = NULL, *loss_function = NULL;
+	void *model_buffer;
+	int rc;
 	Relation rel, idxrel;
 	IndexScanDesc scan;
 	TupleTableSlot* slot;
 	ScanKeyData skey[1];
-	NameData	name_name;
 	bool found = false;
-	Datum  *values;
-	bool   *nulls, *doReplace;
-	struct stat st;
-	int rc;
-	const char* tmp_name = tempnam("/tmp/", "cbm_");
-	int file_length;
-	void *model_buffer;
-	char *str_parameter;
-	char model_type[2] = {'C', '\0'};
-	char *parms = NULL, *classes = NULL, *loss_function = NULL;
+	NameData	name_name;
 
 
-	if (stmt->modelclass == CREATE_MODEL_REGRESSION)
+	namestrcpy(&name_name, modelname);
+
+	switch (modelType)
 	{
-		model_type[0] = 'R';
+		case MODEL_TYPE_REGRESSION:
+			model_type[0] = 'R';
+			break;
+		case MODEL_TYPE_RANKING:
+			model_type[0] = 'G';
+			break;
+		case MODEL_TYPE_CLASSIFICATION:
+			model_type[0] = 'C';
+			break;
+		case MODEL_TYPE_UNDEFINED:
+			model_type[0] = 'U';
+			break;
+		default:
+			elog(ERROR, "undefined model type");
 	}
-
-	if (stmt->modelclass == CREATE_MODEL_RANKING)
-	{
-		model_type[0] = 'G';
-	}
-
-
-	namestrcpy(&name_name, stmt->modelname);
-
-	str_parameter = CreateJsonModelParameters(stmt);
-
-
-	if (mlJsonWrapperOid == InvalidOid)
-	{
-		mlJsonWrapperOid = GetProcOidByName(ML_MODEL_LEARN_FUNCTION);
-	}
-	res = OidFunctionCall5(  mlJsonWrapperOid, 
-	CStringGetTextDatum(stmt->modelname),
-	Int32GetDatum(stmt->modelclass),
-	CStringGetTextDatum(str_parameter),
-	CStringGetTextDatum(stmt->tablename),
-	CStringGetTextDatum(tmp_name));
 
 
 	rc = stat(tmp_name, &st);
 	if (rc)
 	{
 		const char * errmsg = strerror(errno);
-		elog(ERROR, "Temporaly model file \"%s\" not found\n%s", tmp_name, errmsg);
+		elog(ERROR, "Temporaly model file \"%s\" not found\n%s", tmp_name,
+					errmsg);
 	}
 
 	file_length = st.st_size;
 
-	/* need a tuple descriptor representing a single TEXT column */
-	tupdesc = GetCreateModelResultDesc();
-
-
-	/* prepare for projection of tuples */
-	tstate = begin_tup_output_tupdesc(dest, tupdesc, &TTSOpsVirtual);
+	// save metadata
 
 
 	/* save metadata  */
 	if (MetadataTableOid == InvalidOid)
 	{
-			MetadataTableOid  = get_relname_relid(ML_MODEL_METADATA, PG_PUBLIC_NAMESPACE);
-			MetadataTableIdxOid = get_relname_relid(ML_MODEL_METADATA_IDX, PG_PUBLIC_NAMESPACE);
+			MetadataTableOid  = get_relname_relid(ML_MODEL_METADATA,
+												  PG_PUBLIC_NAMESPACE);
+			MetadataTableIdxOid = get_relname_relid(ML_MODEL_METADATA_IDX,
+													PG_PUBLIC_NAMESPACE);
 	}
 
 	tupdesc = GetMlModelTableDesc();
@@ -937,9 +923,9 @@ CreateModelExecuteStmt(CreateModelStmt *stmt, DestReceiver *dest)
 	scan = index_beginscan(rel, idxrel, GetTransactionSnapshot(), 1 /* nkeys */, 0 /* norderbys */);
 
 	ScanKeyInit(&skey[0],
-Anum_ml_name ,
-BTGreaterEqualStrategyNumber, F_NAMEEQ,
-NameGetDatum(&name_name));
+				Anum_ml_name ,
+				BTGreaterEqualStrategyNumber, F_NAMEEQ,
+				NameGetDatum(&name_name));
 
 	index_rescan(scan, skey, 1, NULL /* orderbys */, 0 /* norderbys */);
 
@@ -960,28 +946,34 @@ NameGetDatum(&name_name));
 	values[Anum_ml_model_type-1] = CStringGetTextDatum(model_type);
 	doReplace[Anum_ml_model_type-1]  = true;
 
-	nulls[Anum_ml_model_acc-1] = false;
-	values[Anum_ml_model_acc-1] = Float4GetDatum(DatumGetFloat8(res));
-	doReplace[Anum_ml_model_acc-1]  = true;
+	if (acc)
+	{
+		nulls[Anum_ml_model_acc-1] = false;
+		values[Anum_ml_model_acc-1] = Float4GetDatum(DatumGetFloat8(acc));
+		doReplace[Anum_ml_model_acc-1]  = true;
+	}
 
-	nulls[Anum_ml_model_args-1] = false;
-	values[Anum_ml_model_args-1] = CStringGetTextDatum(str_parameter);
-	doReplace[Anum_ml_model_args-1]  = true;
+	if (str_parameter)
+	{
+		nulls[Anum_ml_model_args-1] = false;
+		values[Anum_ml_model_args-1] = CStringGetTextDatum(str_parameter);
+		doReplace[Anum_ml_model_args-1]  = true;
+	}
 
 
 	nulls[Anum_ml_model_data-1] = false;
 	values[Anum_ml_model_data-1] = LoadFileToBuffer(tmp_name, file_length, &model_buffer);
 	doReplace[Anum_ml_model_data-1]  = true;
 
-		nulls[Anum_ml_model_fieldlist-1] = false;
-		values[Anum_ml_model_fieldlist-1] = GetFeaturesFieldInfo(model_buffer, file_length, &parms, &classes);
-		doReplace[Anum_ml_model_fieldlist-1]  = true;
+	nulls[Anum_ml_model_fieldlist-1] = false;
+	values[Anum_ml_model_fieldlist-1] = GetFeaturesFieldInfo(model_buffer, file_length, &parms, &classes);
+	doReplace[Anum_ml_model_fieldlist-1]  = true;
 
-		nulls[Anum_ml_model_info-1] = false;
-		values[Anum_ml_model_info-1] = CStringGetTextDatum(parms);
-		doReplace[Anum_ml_model_info-1]  = true;
+	nulls[Anum_ml_model_info-1] = false;
+	values[Anum_ml_model_info-1] = CStringGetTextDatum(parms);
+	doReplace[Anum_ml_model_info-1]  = true;
 
-	if (stmt->modelclass == CREATE_MODEL_CLASSIFICATION)
+	if (modelType == MODEL_TYPE_CLASSIFICATION)
 	{
 		nulls[Anum_ml_model_classes-1] = false;
 		values[Anum_ml_model_classes-1] = CStringGetTextDatum(classes);
@@ -1008,7 +1000,7 @@ NameGetDatum(&name_name));
 	if (!found)
 	{
 		nulls[Anum_ml_name-1] = false;
-		values[Anum_ml_name-1] = CStringGetDatum(stmt->modelname);
+		values[Anum_ml_name-1] = CStringGetDatum(modelname);
 		
 		tup = heap_form_tuple(tupdesc, values, nulls);
 
@@ -1018,10 +1010,67 @@ NameGetDatum(&name_name));
 	
 	table_close(rel, RowExclusiveLock);
 
-	/* Send it */
-	res_out = psprintf("%g", DatumGetFloat8(res));
-	do_text_output_oneline(tstate, res_out);
 
+	return rc;
+}
+
+
+/*
+ * Load model from file
+ */
+void
+LoadModelExecuteStmt(LoadModelStmt *stmt)
+{
+
+	LoadModelFromFileAndSaveToMetadata(stmt->filename, stmt->modelname, MODEL_TYPE_UNDEFINED, 0, NULL);
+}
+
+
+/*
+ * Model accuratly
+ */
+void
+CreateModelExecuteStmt(CreateModelStmt *stmt, DestReceiver *dest)
+{
+	Datum acc;
+	TupleDesc   tupdesc;
+	TupOutputState *tstate;
+	NameData	name_name;
+	const char* tmp_name = tempnam("/tmp/", "cbm_");
+	char *str_parameter;
+	int rc;
+	char *res_out;
+
+	namestrcpy(&name_name, stmt->modelname);
+
+	str_parameter = CreateJsonModelParameters(stmt);
+
+
+	if (mlJsonWrapperOid == InvalidOid)
+	{
+		mlJsonWrapperOid = GetProcOidByName(ML_MODEL_LEARN_FUNCTION);
+	}
+	acc = OidFunctionCall5(  mlJsonWrapperOid,
+					CStringGetTextDatum(stmt->modelname),
+					Int32GetDatum(stmt->modelclass),
+					CStringGetTextDatum(str_parameter),
+					CStringGetTextDatum(stmt->tablename),
+					CStringGetTextDatum(tmp_name));
+
+
+	rc = LoadModelFromFileAndSaveToMetadata(tmp_name, stmt->modelname, stmt->modelclass, acc, str_parameter);
+
+
+	/* need a tuple descriptor representing a single TEXT column */
+	tupdesc = GetCreateModelResultDesc();
+
+	/* prepare for projection of tuples */
+	tstate = begin_tup_output_tupdesc(dest, tupdesc, &TTSOpsVirtual);
+
+	/* Send it */
+	res_out = psprintf("%g", DatumGetFloat8(acc));
+
+	do_text_output_oneline(tstate, res_out);
 	end_tup_output(tstate);
 
 	if (rc == 0)

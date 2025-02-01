@@ -672,6 +672,7 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 %type <list>	OptModelElements OptModelElementList
 %type <node>	StrModelElement
 %type <list>	StrModelElements StrModelElementList
+%type <node>	LoadModelStmt
 
 /*
  * Non-keyword token types.  These are hard-wired into the "flex" lexer.
@@ -1078,6 +1079,7 @@ stmt:
 			| ListenStmt
 			| RefreshMatViewStmt
 			| LoadStmt
+			| LoadModelStmt
 			| LockStmt
 			| MergeStmt
 			| NotifyStmt
@@ -6501,6 +6503,23 @@ PredictModelStmt:
 			}
 	;
 
+
+/*****************************************************************************
+ *
+ *		QUERY :
+ *				LOAD MODEL name FROM filename
+ *
+ *****************************************************************************/
+LoadModelStmt:
+	LOAD MODEL name FROM  copy_file_name
+		{
+			LoadModelStmt *n = makeNode(LoadModelStmt);
+			n->objectType = OBJECT_MODEL;
+			n->modelname = $3;
+			n->filename = $5;
+			$$ = (Node *) n;
+		}
+	;
 
 /*****************************************************************************
  *

@@ -324,6 +324,7 @@ ClassifyUtilityCommandAsReadOnly(Node *parsetree)
 		case T_VariableShowStmt:
 		case T_CreateModelStmt:
 		case T_PredictModelStmt:
+		case T_LoadModelStmt:
 			{
 				/*
 				 * These commands don't modify any data and are safe to run in
@@ -1082,9 +1083,18 @@ standard_ProcessUtility(PlannedStmt *pstmt,
 				break;
 			}
 		case T_PredictModelStmt:
+			{
 				CreateModelStmt *stmt = (CreateModelStmt*) parsetree;
 				PredictModelExecuteStmt(stmt,dest);
 				break;
+			}
+		case T_LoadModelStmt:
+			{
+				LoadModelStmt *stmt = (LoadModelStmt*) parsetree;
+				LoadModelExecuteStmt(stmt);
+				break;
+			}
+
 		default:
 			/* All other statement types have event trigger support */
 			ProcessUtilitySlow(pstate, pstmt, queryString,
@@ -2083,6 +2093,10 @@ UtilityReturnsTuples(Node *parsetree)
 		case T_CreateModelStmt:
 		case T_PredictModelStmt:
 			return true;
+
+		case T_LoadModelStmt:
+			return false;
+
 
 		default:
 			return false;
@@ -3259,6 +3273,9 @@ CreateCommandTag(Node *parsetree)
 			break;
 		case T_PredictModelStmt:
 			tag = CMDTAG_PREDICT_MODEL;
+			break;
+		case T_LoadModelStmt:
+			tag = CMDTAG_LOAD_MODEL;
 			break;
 
 		default:
