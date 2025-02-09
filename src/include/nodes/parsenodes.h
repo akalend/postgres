@@ -4050,7 +4050,7 @@ typedef struct DropSubscriptionStmt
 } DropSubscriptionStmt;
 
 /* ----------------------
- *		Create MODEL Statement
+ *		MODEL Type Statement
  * ----------------------
  */
 

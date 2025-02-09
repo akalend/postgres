@@ -28,15 +28,16 @@
 #include "executor/executor.h"
 #include "executor/tuptable.h"
 #include "nodes/parsenodes.h"
-#include "utils/c_api.h"
 #include "tcop/dest.h"
 #include "utils/builtins.h"
+#include "utils/c_api.h"
+#include "utils/errcodes.h"
 #include "utils/jsonb.h"
 #include "utils/model.h"
 #include "utils/rel.h"
 #include "utils/syscache.h"
 
-// #include "utils/varlena.h"
+
 
 
 
@@ -44,7 +45,7 @@
 
 static char * numeric_to_cstring(Numeric n);
 static TupleDesc GetMlModelTableDesc(void);
-static ModelCalcerHandle * GetMlModelByName(const char * name, char **classes_json_str, char **loss_function);
+static ModelCalcerHandle * GetMlModelByName(const char * name, char **classes_json_str, char **loss_function, char* model_out_type);
 static char * GetFeaturesInfo(ModelCalcerHandle *modelHandle, int *resultLen);
 static char* CreateJsonModelParameters(CreateModelStmt *stmt);
 static const char* TransformMetric(char* metric);
@@ -447,10 +448,10 @@ TupleDesc GetPredictModelResultDesc(PredictModelStmt *node){
 
 	scan = index_beginscan(rel, idxrel, GetTransactionSnapshot(), 1, 0);
 
-	ScanKeyInit(&skey,
-Anum_pg_attribute_attrelid,
-BTEqualStrategyNumber, F_OIDEQ,
-ObjectIdGetDatum(PredictTableOid));
+	ScanKeyInit((ScanKey)&skey,
+				Anum_pg_attribute_attrelid,
+				BTEqualStrategyNumber, F_OIDEQ,
+				ObjectIdGetDatum(PredictTableOid));
 
 	index_rescan(scan, skey, 1, NULL, 0 );
 
@@ -570,7 +571,7 @@ SetPredictionToModel(char* loss_function, ModelCalcerHandle **modelHandle)
 	if (strcmp(loss_function,"Logloss") == 0)
 	{
 		// modelclass = MODEL_TYPE_CLASSIFICATION;
-		elog(WARNING,"loss %s APT_RAW_FORMULA_VAL", loss_function);
+		// elog(WARNING,"loss %s APT_RAW_FORMULA_VAL", loss_function);
 		if (!SetPredictionType(*modelHandle, APT_RAW_FORMULA_VAL))
 		{
 			elog(ERROR, "prediction type error %s", GetErrorString());
@@ -579,7 +580,7 @@ SetPredictionToModel(char* loss_function, ModelCalcerHandle **modelHandle)
 	else if (strcmp(loss_function,"MultiClass") == 0)
 	{
 		// modelclass = MODEL_TYPE_CLASSIFICATION;
-		elog(WARNING,"loss %s APT_CLASS", loss_function);
+		// elog(WARNING,"loss %s APT_CLASS", loss_function);
 		if (!SetPredictionType(*modelHandle, APT_CLASS))
 		{
 			elog(ERROR, "prediction type error %s", GetErrorString());
@@ -587,7 +588,7 @@ SetPredictionToModel(char* loss_function, ModelCalcerHandle **modelHandle)
 	}
 	else
 	{
-		elog(WARNING,"loss %s APT_RAW_FORMULA_VAL", loss_function);
+		// elog(WARNING,"loss %s APT_RAW_FORMULA_VAL", loss_function);
 		// modelclass = MODEL_TYPE_REGRESSION;
 		if (!SetPredictionType(*modelHandle, APT_RAW_FORMULA_VAL))
 		{
@@ -683,6 +684,7 @@ PredictModelExecuteStmt(CreateModelStmt *stmt, DestReceiver *dest)
 	// ModelType modelclass;
 	int32 j=0, max_probability_idx;
 	float4 max_probability;
+	char model_type;
 
 	/* This is the context that we will allocate our output data in */
 	resultcxt = CurrentMemoryContext;
@@ -703,10 +705,10 @@ PredictModelExecuteStmt(CreateModelStmt *stmt, DestReceiver *dest)
 
 	/* attribute table scanning */
 	rel = table_open(AttributeRelationId, AccessShareLock);
-	ScanKeyInit(&skey,
-Anum_pg_attribute_attrelid,
-BTEqualStrategyNumber, F_OIDEQ,
-ObjectIdGetDatum(form->oid));
+	ScanKeyInit((ScanKey)&skey,
+				Anum_pg_attribute_attrelid,
+				BTEqualStrategyNumber, F_OIDEQ,
+				ObjectIdGetDatum(form->oid));
 
 	sscan = systable_beginscan(rel, AttributeRelidNumIndexId, true,
 			   SnapshotSelf, 1, &skey[0]);
@@ -716,7 +718,8 @@ ObjectIdGetDatum(form->oid));
 		Form_pg_attribute record;
 		record = (Form_pg_attribute) GETSTRUCT(tup);
 		if (record->attnum < 0) continue;
-		TupleDescInitEntry(tupdesc, (AttrNumber) record->attnum, NameStr(record->attname),
+		TupleDescInitEntry(tupdesc, (AttrNumber) record->attnum,
+			NameStr(record->attname),
 			record->atttypid, -1, 0);
 	}
 	TupleDescInitEntry(tupdesc, (AttrNumber) table_natts+1, "class", TEXTOID, -1, 0);
@@ -726,7 +729,7 @@ ObjectIdGetDatum(form->oid));
 
 	/* end create tupledesc of out data*/
 
-	modelHandle = GetMlModelByName((const char*)stmt->modelname, &classes_json_str, &loss_function);
+	modelHandle = GetMlModelByName((const char*)stmt->modelname, &classes_json_str, &loss_function, &model_type);
 	if (classes_json_str)
 	{
 		classes = GetClassesFromJson(classes_json_str);
@@ -795,11 +798,17 @@ ObjectIdGetDatum(form->oid));
 		}
 
 		/* out predict to output */
-		if (classes_json_str)
+		if ( model_type == 'C')
 		{
 			if (model_dimension == 1) // Logloss
 			{
-				outvalues[form->relnatts] = (Datum) cstring_to_text(classes[sigmoid(result_pa[0]) > 0.5 ? 1: 0]);
+				if (classes_json_str)
+					outvalues[form->relnatts] = (Datum) cstring_to_text(classes[sigmoid(result_pa[0]) > 0.5 ? 1: 0]);
+				else
+					if (sigmoid(result_pa[0]) > 0.5)
+						outvalues[form->relnatts] = (Datum) cstring_to_text( "1");
+					else
+						outvalues[form->relnatts] = (Datum) cstring_to_text( "1");
 			}
 			else//  Multiclass
 				outvalues[form->relnatts] = (Datum) cstring_to_text(classes[max_probability_idx]);
@@ -865,7 +874,6 @@ LoadModelFromFileAndSaveToMetadata(const char* tmp_name, char* modelname,
 
 
 	namestrcpy(&name_name, modelname);
-
 	switch (modelType)
 	{
 		case MODEL_TYPE_REGRESSION:
@@ -973,7 +981,7 @@ LoadModelFromFileAndSaveToMetadata(const char* tmp_name, char* modelname,
 	values[Anum_ml_model_info-1] = CStringGetTextDatum(parms);
 	doReplace[Anum_ml_model_info-1]  = true;
 
-	if (modelType == MODEL_TYPE_CLASSIFICATION)
+	if (modelType == MODEL_TYPE_CLASSIFICATION && classes != NULL)
 	{
 		nulls[Anum_ml_model_classes-1] = false;
 		values[Anum_ml_model_classes-1] = CStringGetTextDatum(classes);
@@ -1021,6 +1029,16 @@ LoadModelFromFileAndSaveToMetadata(const char* tmp_name, char* modelname,
 void
 LoadModelExecuteStmt(LoadModelStmt *stmt)
 {
+	if (RecoveryInProgress())
+	{
+		ereport(ERROR,
+				(errcode(ERRCODE_WITH_CHECK_OPTION_VIOLATION),
+				 errmsg("CREATE statement accepted only master, it is replication"),
+				 errhint("You might need create the model in master")));
+
+
+	}
+
 
 	LoadModelFromFileAndSaveToMetadata(stmt->filename, stmt->modelname, MODEL_TYPE_UNDEFINED, 0, NULL);
 }
@@ -1040,6 +1058,17 @@ CreateModelExecuteStmt(CreateModelStmt *stmt, DestReceiver *dest)
 	char *str_parameter;
 	int rc;
 	char *res_out;
+
+	if (RecoveryInProgress())
+	{
+		ereport(ERROR,
+				(errcode(ERRCODE_WITH_CHECK_OPTION_VIOLATION),
+				 errmsg("CREATE statement accepted only master, it is replication"),
+				 errhint("You might need create the model in master")));
+
+
+	}
+
 
 	namestrcpy(&name_name, stmt->modelname);
 
@@ -1100,9 +1129,9 @@ GetProcOidByName(const char* proname)
 	scan = index_beginscan(rel, idxrel, GetTransactionSnapshot(), 1 /* nkeys */, 0 /* norderbys */);
 
 	ScanKeyInit(&skey[0],
-	Anum_pg_proc_proname,
-	BTGreaterEqualStrategyNumber, F_NAMEEQ,
-	NameGetDatum(name));
+				Anum_pg_proc_proname,
+				BTGreaterEqualStrategyNumber, F_NAMEEQ,
+				NameGetDatum(name));
 
 
 	index_rescan(scan, skey, 1, NULL /* orderbys */, 0 /* norderbys */);
@@ -1274,7 +1303,7 @@ GetClassesFromJson(char* classes_json_str)
 }
 
 static ModelCalcerHandle*
-GetMlModelByName(const char * name, char** classes_json_str, char **loss_function)
+GetMlModelByName(const char * name, char** classes_json_str, char **loss_function, char* model_out_type)
 {
 	Relation rel, idxrel;
 	ScanKeyData skey[1];
@@ -1306,9 +1335,9 @@ GetMlModelByName(const char * name, char** classes_json_str, char **loss_functio
 	scan = index_beginscan(rel, idxrel, GetTransactionSnapshot(), 1 /* nkeys */, 0 /* norderbys */);
 
 	ScanKeyInit(&skey[0],
-Anum_ml_name ,
-BTGreaterEqualStrategyNumber, F_NAMEEQ,
-NameGetDatum(&name_data));
+				Anum_ml_name ,
+				BTGreaterEqualStrategyNumber, F_NAMEEQ,
+				NameGetDatum(&name_data));
 
 	index_rescan(scan, skey, 1, NULL /* orderbys */, 0 /* norderbys */);
 
@@ -1341,11 +1370,12 @@ NameGetDatum(&name_data));
 		const char* model_type = text_to_cstring(type_text);
 
 		*loss_function = text_to_cstring(DatumGetTextPP(values[Anum_ml_model_loss_function-1]));
-
-		if (model_type[0] == 'C')
+		*model_out_type = model_type[0];
+		if (model_type[0] == 'C' && !nulls[Anum_ml_model_classes-1])
 		{
 			txt  = DatumGetTextPP(values[Anum_ml_model_classes-1]);
-			*classes_json_str = text_to_cstring(txt);
+			if (txt)
+				*classes_json_str = text_to_cstring(txt);
 		}
 		if (!LoadFullModelFromBuffer(modelHandle, bufferData, len))
 		{

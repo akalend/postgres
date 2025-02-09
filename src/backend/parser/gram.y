@@ -6362,7 +6362,7 @@ CreateModelStmt:
 			n->modelname = $3;
 			n->tablename = $8;
 			n->options = $5;
-			n->modelclass = CREATE_MODEL_CLASSIFICATION;
+			n->modelclass = MODEL_TYPE_CLASSIFICATION;
 			$$ = (Node *) n;
 		}
 	| CREATE CLASSIFICATION MODEL name '(' OptModelElementList ')' FROM name
@@ -6372,7 +6372,7 @@ CreateModelStmt:
 			n->modelname = $4;
 			n->tablename = $9;
 			n->options = $6;
-			n->modelclass = CREATE_MODEL_CLASSIFICATION;
+			n->modelclass = MODEL_TYPE_CLASSIFICATION;
 			$$ = (Node *) n;
 		}
 	| CREATE REGRESSION MODEL name '(' OptModelElementList ')' FROM name
@@ -6382,7 +6382,7 @@ CreateModelStmt:
 			n->modelname = $4;
 			n->tablename = $9;
 			n->options = $6;
-			n->modelclass = CREATE_MODEL_REGRESSION;
+			n->modelclass = MODEL_TYPE_REGRESSION;
 			$$ = (Node *) n;
 		}
 	| CREATE RANKING MODEL name '(' OptModelElementList ')' FROM name
@@ -6392,7 +6392,7 @@ CreateModelStmt:
 			n->modelname = $4;
 			n->tablename = $9;
 			n->options = $6;
-			n->modelclass = CREATE_MODEL_RANKING;
+			n->modelclass = MODEL_TYPE_RANKING;
 			$$ = (Node *) n;
 		}
 	;
