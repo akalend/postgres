@@ -805,10 +805,12 @@ PredictModelExecuteStmt(CreateModelStmt *stmt, DestReceiver *dest)
 				if (classes_json_str)
 					outvalues[form->relnatts] = (Datum) cstring_to_text(classes[sigmoid(result_pa[0]) > 0.5 ? 1: 0]);
 				else
-					if (sigmoid(result_pa[0]) > 0.5)
+				{
+					if (result_pa[0] > 0.5)
 						outvalues[form->relnatts] = (Datum) cstring_to_text( "1");
 					else
-						outvalues[form->relnatts] = (Datum) cstring_to_text( "1");
+						outvalues[form->relnatts] = (Datum) cstring_to_text( "0");
+				}
 			}
 			else//  Multiclass
 				outvalues[form->relnatts] = (Datum) cstring_to_text(classes[max_probability_idx]);
