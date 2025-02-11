@@ -145,6 +145,11 @@ TransformMetric(char* metric)
 		return "Logloss";
 	}
 
+	if (strcmp(metric, "multiclass") == 0)
+	{
+		return "MultiClass";
+	}
+
 	if (strcmp(metric, "auc") == 0)
 	{
 		return "AUC";
@@ -197,6 +202,11 @@ CreateJsonModelParameters(CreateModelStmt *stmt)
 				if (strcmp(opt->value, "querysoftmax") == 0)
 				{
 					appendStringInfo(&buf, "\"loss_function\":\"QuerySoftMax\"");
+					break;
+				}
+				if (strcmp(opt->value, "multiclass") == 0)
+				{
+					appendStringInfo(&buf, "\"loss_function\":\"MultiClass\"");
 					break;
 				}
 				break;
@@ -410,6 +420,9 @@ GetPredictTableFormByName(const char *tablename)
 	Oid PredictTableOid;
 
 	PredictTableOid = get_relname_relid(tablename,(Oid) PG_PUBLIC_NAMESPACE);
+
+	if (!PredictTableOid)
+		elog(ERROR, "tablename %s not found in public", tablename);
 
 	tup = SearchSysCache1(RELOID, ObjectIdGetDatum(PredictTableOid));
 
